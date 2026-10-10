@@ -1,0 +1,265 @@
+// Original Poddle server physics, commit d27625028550bd97c066c95990e4646510a1591c.
+// Regression reference only; never imported by the game.
+const COURT = { halfW: 3.05, halfL: 6.7, kitchen: 2.13, net: 0.91 };
+const G = 9.81, R = 0.11;                 // gravity, ball radius
+const HIT_LINE = 6.5;                     // where you stand by default (distance from net)
+const X_LIMIT = 3.8, Y_MIN = 0.3, Y_MAX = 2.3;
+const Z_NEAR = 2.6, Z_FAR = 8.4;          // footwork range (distance from net)
+const AUTO_SPEED = 5.5;                   // sideways run speed in auto-move mode, m/s
+const FOOT_SPEED = 7;                     // auto-footwork forward/back, m/s
+const STANCE = 0.3;                       // stand this far behind the predicted contact: you meet the ball out in front
+const SWING_WINDOW = 0.32;                // s a swing stays "live" waiting for the ball
+const LAG_MAX = 0.3;                     // s a swing may be back-dated by its reported age
+const FIX_WINDOW = 0.25;                  // s after a hit that a corrected power may still re-aim the ball
+// A re-aim's bend brings its new velocity in over this window (a share of the hang the ball has left, s, clamped) and flies straight on after it.
+// It is the old velocity ease's own window (NOTES 63), so the ball reaches the bounce with the heading it always did and the receiver and Matt
+// meet it where they did; the receiver is planned again when it ends, which restarts Matt's reaction clock there, as the ease's end did (NOTES 154).
+const BEND = { share: 0.5, min: 0.1, max: 0.45, most: 6 };        // most: bends one ball may carry at once (a swoop is two; a legacy client's later re-aims add theirs). Past it a re-aim is refused: only a client flooding settled reports gets there
+const FIX_ALONG = 0.1;                    // a re-aim never stops the ball or sends it back along the court: it reaches the bounce at least this share of the pace it had. Only a guard: no sampled re-aim came near it, old ease or new (slowest 0.11 of 6700, near-net pushes included, NOTES 154)
+const CONTACT = 0.25;                     // a stroke meets the ball this far in front of the paddle
+const Z_ASSIST = 0.9;                      // share of the forward/back footwork the game does for a player who walks themselves
+const Z_PUSHED = 0.85;                     // most of a player's own lean a deep ball can take back off: you get pushed out of the kitchen, but never yanked all the way home by one shot
+const BLOCK_ON = process.env.BLOCK !== '0';   // scripted tests with a parked paddle turn the net block off
+// Up at the net a paddle simply held in the ball's path taps it back. The box grows the closer to the net you stand (near:
+// at the kitchen line it is the full swing box), and the ball is met at the paddle, not a metre in front of it: firing early
+// stole the swing that was already on its way. run: held blocks in a row before the box shrinks back (nobody parks a paddle and rallies forever).
+const BLOCK = { within: 5.0, x: 0.95, y: 0.8, front: 0.5, behind: 0.3, volley: 5.2, near: { x: 1.3, y: 1.05, behind: 0.45 }, run: 3 };
+// Near the net, block -> nudge -> punch -> drive is ONE curve, not a step and a cliff (it used to clamp every swing under
+// n 0.4 to exactly n 0.12 and then jump to a full drive). A paddle held still returns held[0] m of the incoming ball,
+// held[1] m when it arrives at spd[1] and there is pace to give back; push, and the landing walks smoothly out to the
+// drive's own depth at full. Above full the shot is the ordinary one, so the two meet exactly.
+const PUSH = { full: 0.45, fix: 0.35, gate: 0.3, late: 0.2, nudge: 0.18, rate: 7.5, bounce: 3.6, fade: 1.2, name: 0.14, floor: [0.03, 0.12], held: [1.6, 1.9], spd: [6, 20] };
+const REACH_X = 1.0, REACH_Y = 0.5;          // extra metres of reach for a full-effort swing
+const ZONE = { x: 1.15, y: 0.95, front: 1.6, behind: 1.25 };   // contact box around the paddle
+const BOUNCE = { up: 0.7, along: 0.78 };
+// Slice = backspin (flat, open paddle face). It skids LOW: lift takes a share of gravity off, and the same depth is flown a little
+// QUICKER, so the arc tops out well under a flat ball's (lift 0.3 x skid 0.12 at full spin: 0.54 of the rise). It used to float
+// (T x1.3 on top of the lift): a soft spun tap climbed to 2.65 m for 1.56 s, a weak backhand slice to 2.4 m, and it read as a lob.
+// Then it bites: the first bounce stays low, loses most of its forward speed and kicks a little the way it was aimed.
+// lift is mirrored in web/scene.js SPUN (the client's coast() flies the same curve): change both or neither. skid is server-only.
+const SLICE = { lift: 0.3, skid: 0.12, up: 0.55, along: 0.45, kick: 3.4, clear: 0.15, at: 0.45 };   // kick: sideways m/s the bounce throws the ball — a spinning ball does not come off the floor straight. at: sliced() above this is CALLED a slice
+// Curl: the hardest flat drives bend in the air (NOTES 71, 72). A constant sideways pull until the first bounce, like a second gravity
+// lying on its side, so every flight stays closed form: solve() starts the ball c T / 2 wide of its line and the bow brings it back
+// onto the marker, c T^2 / 8 off the chord at mid-flight. Sized for a bow of `bow` m (c = 8 bow / T^2, at most max m/s^2), smoothly
+// from n `from` to `full`. Its own threshold on purpose: SMASH and the trail colours may move, and a bet (capped at SMASH) never curls.
+// c rides on the hit / launch / state packets as `c`, so web/scene.js coast() needs no copy of these numbers.
+// swoop: a human's shot only starts curling at the settled re-aim (~100 ms in). It used to ease the ball out wide onto a banana and let
+// the pull hook it back: a zig then a zag (NOTES 72). Now reaim() keeps the ball's heading and swoops it onto the marker with the
+// re-aim's one bend, at least a `swoop` m bow over the flight that is left (the marker moves to where a steady pull with that bow would
+// land it; ~1.6 m off the tangent). The ball's own c stays what it was struck with (0 for a bet): the bend is the re-aim's (NOTES 154).
+const CURVE = { from: 0.8, full: 0.97, bow: 0.6, max: 24, swoop: 0.4 };
+// Serve: the ball hangs in the air and only drifts after the server when they walk away from it.
+const SERVE_AHEAD = 0.55;                 // it wants to sit this far in front of the paddle
+const SERVE_DEAD = [0.4, 0.2, 0.35];      // x,y,z slack: move this far from it and it stays exactly where it is
+const SERVE_SETTLE = 0.4;                 // once it follows, it keeps drifting until it is back within this share of the slack
+const SERVE_FOLLOW = 3.5;                 // critically damped spring, rad/s: ~0.6 s to cover 63 % of a step, ~1.1 s for 90 %
+const SERVE_ZONE = { x: 0.9, y: 0.9, front: 1.4, behind: 0.5 };   // a serve has to meet the ball: tighter than the rally box
+const SERVE_POWER = 7;                    // serve power needed (see servePower: a gentle swing counts; 6 = the floor every swing reports, so this is just 'more than a twitch')
+// NOTES 40: serving used to want a settled power of 11 and to hold anything under 17 for 0.7 s in case it was the wind-up. Rally power is scored by
+// arm travel (nothing below 35 deg, full at 110), so a light underhand serve scored ~3 and nothing happened, and a medium one waited. "Make it
+// responsive but not stubborn." A serve's power is now lenient (below), a swing that comes BACK through the ball strikes at once, and only a swing
+// from rest (which may be the wind-up) waits, briefly.
+const SERVE_ROM = [15, 45];              // deg of arm travel over which a serve earns its peak rate (the rally's scale is 35..110)
+const SERVE_BACK = { off: 20, back: 0.3 };  // started this far (deg) from the resting aim and heading back toward it: the stroke, not the wind-up
+// A serve is wound up first, and the wind-up is a swing too (30 recorded pairs: 0.4-0.9 s apart, 27 of 30 the other way, wind-up power median 7, p90 15, max 21).
+// The client reports a swing EARLY, on a bet that overshoots (recorded wind-ups: first called 30.4, settled 8.2; 32.3 > 8.0; 26.6 > 6.0), then sends
+// the settled power (final). Only a settled report decides a serve: the bets alone still served with 10 of 27 recorded wind-ups, settled ones with 2.
+const SERVE_SURE = 15;                    // SETTLED this hard is no wind-up: struck at once (settled wind-ups: median 6.9, p90 15.2, 2 of 31 reach 17)
+const SERVE_WAIT = 0.3;                   // s a bet may wait for its settled report (it lands 60-280 ms later) before it is taken as it stands
+const SERVE_PREV = 1.2;                   // s: a swing this soon after another one IS the stroke, the one before was its wind-up (if it beats that one: as strong, or the other way)
+const SERVE_HOLD = 0.7;                   // s a lone middling swing waits for the real stroke to follow before it serves by itself
+const SERVE_HOLD_FIRM = 0.4;               // ...but a firmer one (10+) waits only this long: the wind-ups that settle there are few, and the stroke after a wind-up comes back through the ball and strikes at once anyway
+const SERVE_FIRM = 10;
+const SERVE_FLOOR = 0.35;                 // a legal soft serve still carries past the kitchen
+const REACH = 3.2;                        // no shot asks the receiver to get the paddle wider than this
+const PASSED = 5.5;                       // a bounced ball this far beyond the baseline is gone
+const envNum = (k, d) => (process.env[k] != null && process.env[k] !== '' && Number.isFinite(+process.env[k]) ? +process.env[k] : d);   // a numeric knob with a default (0 allowed)
+const SCALE = +process.env.TIMESCALE || 1;                     // tests only: run the sim faster than real time
+const HEARTBEAT = +process.env.HEARTBEAT || 4000;              // ms between pings; a socket that misses one is dead (sleeping laptop, dropped wifi)
+
+const sgn = side => (side === 0 ? 1 : -1);        // side 0 lives at +z, side 1 at -z
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const num = (v, d) => (Number.isFinite(+v) ? +v : d);          // untrusted input -> finite number
+const DT = 1 / 60;
+
+// The bot (one per room at most; the rules are further down, in the room).
+// react: s before it starts moving. foot: m/s. err: how far it misjudges x (m). reach: how centred the ball must be
+// before it swings. place: 0 = hits anywhere, 1 = always away from you. whiff: chance it simply mistimes a swing.
+const BOTS = [
+  { name: 'Rookie', react: 0.45, foot: 1.9, err: 0.9, reach: 0.55, power: [0.10, 0.40], place: 0.0, lob: 0.25, slice: 0, whiff: 0.18 },
+  { name: 'Club',   react: 0.30, foot: 2.5, err: 0.5, reach: 0.70, power: [0.25, 0.65], place: 0.5, lob: 0.15, slice: 0.1, whiff: 0.07 },
+  { name: 'Pro',    react: 0.18, foot: 4.2, err: 0.2, reach: 0.90, power: [0.45, 0.95], place: 0.9, lob: 0.10, slice: 0.18, whiff: 0.02 },
+  { name: 'Tour',   react: 0.24, foot: 3.3, err: 0.35, reach: 0.80, power: [0.35, 0.80], place: 0.7, lob: 0.12, slice: 0.14, whiff: 0.045 },   // between Club and Pro: the tournaments' Matt. APPENDED at index 3, so revive's bot= and 0-2 keep meaning Rookie/Club/Pro
+];
+const BOT_ORDER = [0, 1, 3, 2];                                  // how every picker lists them: Rookie, Club, Tour, Pro
+const AUTOBOT = process.env.AUTOBOT !== '0';                   // tests turn off auto-join and (in LOCAL) seat takeover
+const SWING_SERVE = process.env.SWING_SERVE != null ? process.env.SWING_SERVE !== '0' : AUTOBOT;   // off in tests
+const READY_S = process.env.READY_S != null ? +process.env.READY_S : (AUTOBOT ? 3 : 0);   // s counted down (3, 2, 1) before the FIRST serve of a match, once both seats are ready: a match no longer starts the instant an opponent sits down. Off in tests (like SWING_SERVE), which measure rallies and would just wait: test/countdown.test.mjs and test/rooms.test.mjs keep it on
+const WIN_AT = process.env.WIN_AT != null ? +process.env.WIN_AT : (AUTOBOT ? 11 : 0);   // first to 11, win by 2 (off in tests)
+const WIN_BY = process.env.WIN_BY != null ? +process.env.WIN_BY : 2;                  // tests only: a browser test needs a match that is SURE to end (two scripted players can trade points at deuce for ever)
+const REVIVE_S = process.env.REVIVE_S != null ? +process.env.REVIVE_S : 120;   // s after this process starts during which a returning tab may bring its court back (see revive())
+const ROOM_TTL = (process.env.ROOM_TTL != null ? +process.env.ROOM_TTL : 30) * 1000;   // ms a room may stand with no human in it (tests shorten it)
+const ROOM_CAP = +process.env.ROOM_CAP || 40;                  // rooms at once: one small machine hosts them all (tests lower it)
+const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';          // no I, L, O, 0, 1: a code gets read out across a room
+const SPEC_CAP = 8;                                            // spectators per room (docs/SPECTATE.md)
+const EMOTES = 10, EMOTE_GAP = 900, EMOTE_FLOOD = 60;           // emotes: an index into web/ui.js EMOTES. A PLAYER waits 1 s between two (NOTES 205; 900 ms here so a tap on time is never dropped). A SPECTATOR has no cooldown (NOTES 213, as NOTES 46): 60 ms only stops a script flooding the court
+const ADDR_ROOMS = +process.env.ADDR_ROOMS || 4;               // rooms one address may have made and still standing: 40 idle sockets from one machine took every court (busy beyond that)
+const MSG_DROP = 200 * SCALE, MSG_KILL = 1000 * SCALE;         // messages a second from one socket: a client sends about 25. Past the first the rest are dropped unread, past the second the socket goes (one flooding socket held every court at 8-12 packets a second)
+const BUF_MAX = 256 * 1024;                                    // bytes queued on a socket that has stopped reading: it is dead weight, and 8 of them took the process to 1.6 GB on a 256 MB machine
+const SMASH = 0.76;                                            // n above this is a smash (power 27.3; a wide stroke gets there from ~24 rad/s, NOTES 82)
+// A person's smash takes 20% more swing than it did (NOTES 175; the owner, 2026-10-02). The line above sat at 23.4 rad/s on a wide AirPod
+// stroke (19.1 on a phone); now it is 28.0 (22.9). Those swings reach n SMASH_IN in web/motion.js (0.62 + 0.38 ((1.2 x 23.35 - 10) / 22)^2),
+// so effort() keeps every settled power under SMASH as it was, holds SMASH..SMASH_IN at SMASH (the hardest drive, not a smash: shotKind
+// is strict), and stretches the band above back over SMASH..1, so the hardest swing still flies at full power. Only human swings pass
+// through it: Matt picks his n and is not swung, so he smashes as often as before, and so do the colours, stats and bets keyed on SMASH.
+const SMASH_IN = 0.875;
+const effort = n => n <= SMASH ? n : n <= SMASH_IN ? SMASH : SMASH + (n - SMASH_IN) * (1 - SMASH) / (1 - SMASH_IN);
+const SMASH_UP = [0.4, 0.55];                                  // lob (0..0.8) over which a hard swing stops being a smash: a smash comes DOWN or level through the ball. Recorded smashes send lob <= 0.27 (<= 0.45 with the reworked lob gate): called at 0.475, upward share 0.6
+const LOB_ARC = [0.25, 0.6];                                   // underhand() over which the flight turns from the drive's into the lob's: 0.8 of the way by 0.5, all of it by 0.6
+const ASK_S = +process.env.ASK_S || 10, ASK_COOL_S = +process.env.ASK_COOL_S || 10, ASK_GAP_S = process.env.ASK_GAP_S != null ? +process.env.ASK_GAP_S : 3;   // s on the wall clock (docs/SPECTATE.md Asking to play): a request lives 10 s; a requester waits 10 s after it ENDS; a court rests 3 s between requests
+const STAMP_S = process.env.STAMP_S != null ? +process.env.STAMP_S : 2;   // s the title has the court to itself before the vote (web/ui.js STAMP_MS)
+const REMATCH_S = +process.env.REMATCH_S || 20, HOLD_S = +process.env.HOLD_S || 15, PAUSE_S = +process.env.PAUSE_S || 600, CAL_S = +process.env.CAL_S || 60;   // s on the WALL clock (room time stands still in two of them): the rematch vote, a dropped player's seat, the longest pause, the longest a match waits for a seat that says it is calibrating. Tests shorten them
+const PROMO_S = +process.env.PROMO_S || CAL_S;                 // s a spectator who was let into Matt's seat has to get their paddle ready before Matt is back
+// Trophies (docs/TROPHIES.md 3.4): what a forfeit itself puts on the game it cut short (nobody struck, too few points, the leaver ahead): never held against the
+// stayer. Everything else in BAD_FLAGS (match-wide rules, an anonymous or forged seat, a changed identity, a teleporting paddle, swings with no hand behind them) leaves the stayer at +0
+const FORFEIT_FLAGS = new Set(['early_forfeit', 'leaver_ahead', 'afk', 'too_fast']);
+const BAD_FLAGS = new Set([...abuse.MATCH_WIDE, 'anon', 'pad', 'origin_bad', 'too_fast', 'afk', 'paddle_teleport', 'swing_motion', 'ident_changed']);
+let clock = 0;                            // sim clock of the process. A room starts its own time from it and stops that while paused or holding a seat, so rooms agree until one of them pauses
+// A name is untrusted text that lands on other people's screens: strings only, no control, invisible or bidi characters, no angle brackets, 12 characters. '' = none given.
+// Nor characters that draw as nothing (Hangul fillers, the braille blank, soft hyphen, tags: a name of those was a blank on every scoreboard), nor more than 2 stacked marks on a letter. What is left must have something to see in it.
+const NAME_OUT = /[\u0000-\u001f\u007f-\u009f\p{Cf}\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u2028-\u202e\u2800\u3164\uffa0\ufff9-\ufffb\u{e0000}-\u{e0fff}\ud800-\udfff<>]/gu;
+const cleanName = v => { if (typeof v !== 'string') return '';
+  const n = [...usernames.stripBadges(v.slice(0, 64)).replace(NAME_OUT, '').replace(/(\p{M}{2})\p{M}+/gu, '$1').replace(/\s+/g, ' ').trim()].slice(0, 12).join('').trim();
+  return /[\p{L}\p{N}\p{S}\p{P}]/u.test(n) ? n : ''; };
+const secsTo = ms => Math.max(0, Math.ceil((ms - Date.now()) / 1000));
+// Every message leaves through here. A socket that has stopped reading (BUF_MAX queued) is let go instead of fed: whoever it was reconnects by cid if they are still there.
+const askCool = new Map();                                     // key -> wall ms before which it may not ask again. Keys: 'c:' + cid (or the socket itself with no cid), so a reload does not reset it, AND 'a:' + address, which a client cannot rotate (a new cid, or none, got round the cid alone)
+const askKeys = ws => [ws.cid ? 'c:' + ws.cid : ws, ...(loopback(ws) ? [] : ['a:' + ws.addr])];   // loopback: every test, and this machine's own tabs, share one address
+const coolLeft = ws => Math.max(0, ...askKeys(ws).map(k => { const t = askCool.get(k); return t ? secsTo(t) : 0; }));
+function coolSet(ws) { const ms = Date.now(); for (const [k, t] of askCool) if (t <= ms) askCool.delete(k); for (const k of askKeys(ws)) askCool.set(k, ms + ASK_COOL_S * 1000); }   // past entries pruned on every set: a few hundred at most, and a closed cid-less socket is not kept
+function put(ws, s) { if (!ws || ws.readyState !== 1) return; if (ws.bufferedAmount > BUF_MAX) return ws.terminate(); ws.send(s); }
+
+function newPlayer(ws, side) {
+  return { ws, side, x: 0, y: 1.0, z: sgn(side) * HIT_LINE, zT: sgn(side) * HIT_LINE, q: [0, 0, 0, 1], swing: null, lunge: null, contact: null, react: 0, err: 0, bot: !ws, hit: null, blockRun: 0, rate: 0, swAt: -Infinity, swPrev: -Infinity, swPow: 0, swDir: 0, pvPow: 0, pvDir: 0, servePending: null };   // sw*: my latest swing (when, and its last reported power and dir), swPrev / pv*: the one before it
+}
+
+// Ballistic solve: pick where the ball should land, find the velocity that gets it there
+// and clears the net. Every shot is "in" by construction; the skill is reaching and timing it.
+// how underhand was the swing? lob is the upward-scoop share of the stroke, 0..0.8 from the client
+const underhand = lob => { const t = clamp((lob / 0.8 - 0.62) / 0.26, 0, 1); return t * t * (3 - 2 * t); };   // well over half the stroke must be going UP (upward share 0.62 starts to count, 0.88 is fully underhand): a normal low-to-high swing is not a lob
+// how sliced? slice = the spin the client measured in the swing (wrist roll or a curved path), |slice| = how much, its sign = which way it breaks.
+// CONTINUOUS: every hit carries its own amount (a threshold made 76 % of real strokes exactly 0 and 16 % full, nothing between). A scoop is never much of a slice.
+const sliced = (slice, lob) => clamp(Math.abs(slice || 0), 0, 1) * (1 - 0.6 * underhand(lob));
+const smooth = (x, a, b) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+// how much of the lob's high, slow flight does it get? underhand() is a 50/50 blend at 0.5, and T blends LINEARLY while the
+// apex goes with T^2: a clearly underhand swing (u 0.5) topped out at ~2.3 m, a low arc. Steeper: 0.8 at u 0.5, 1 from 0.6.
+const lofted = lob => smooth(underhand(lob), LOB_ARC[0], LOB_ARC[1]);
+// how flat (level or downward) was it? 1 up to lob 0.4, 0 from 0.55 (upward share 0.69). Only a flat swing smashes or gets the smash's extra pace.
+const flat = lob => 1 - smooth(lob, SMASH_UP[0], SMASH_UP[1]);
+const hard = n => { const t = clamp((n - 0.45) / 0.25, 0, 1); return t * t * (3 - 2 * t); };   // 0 below n 0.45, 1 from 0.7: power beats spin (nothing in here uses it today; test/kinds.mjs still reads it)
+// smash: n 0.76 = power 27.3: it has to be earned. A relaxed stroke tops out at 0.62 (web/motion.js EASY); only speed adds the rest, from ~24 rad/s on a wide stroke (5 of his 62 real strokes, NOTES 82).
+// 'slice' is the label for spin that READS as one (> SLICE.at 0.45: was 0.5, which left his forehand slice at 0.45-0.47 a 'drive'; 27 % of real strokes, test/kinds.mjs). A twitch (n < 0.1) is a tap whatever the wrist did: 28 of the 41 recorded 'slices' were under 9 rad/s.
+// A hard swing with a clear upward component is never a smash (it used to be whenever underhand() <= 0.5, i.e. upward share < 0.75):
+// flat() gates it. The lob label follows the flight: lofted() > 0.5 (u > 0.425) is what flies like a lob.
+const shotKind = (n, lob, slice) => (n > SMASH && flat(lob) > 0.5 ? 'smash' : n < 0.1 && lofted(lob) <= 0.5 ? 'tap' : sliced(slice, lob) > SLICE.at ? 'slice' : lofted(lob) > 0.5 ? (n < 0.2 ? 'dink' : 'lob') : n < 0.1 ? 'tap' : 'drive');
+// The near-net curve. n is the swing (0 = a paddle held still), spd = how fast the ball is coming in: a hard ball rebounds
+// off a still paddle deeper than a dead one does, the way a real reset block does. Returns the power the shot goes out at
+// (the trail, the haptics and the label all read it) and where it lands. At n = PUSH.full both meet the level drive exactly.
+const depthOf = n => lerp(2.6, 5.9, n);                         // a level drive's landing depth, the curve's far end
+function blockShot(n, spd) {
+  const k = clamp((spd - PUSH.spd[0]) / (PUSH.spd[1] - PUSH.spd[0]), 0, 1);     // how much pace there is to give back
+  const t = Math.pow(clamp(n, 0, PUSH.full) / PUSH.full, 1.2);                  // slightly concave: the first bit of push shows
+  return { n: lerp(lerp(PUSH.floor[0], PUSH.floor[1], k), PUSH.full, t), depth: lerp(lerp(PUSH.held[0], PUSH.held[1], k), depthOf(PUSH.full), t) };
+}
+const pushKind = n => (n < PUSH.name ? 'block' : 'punch');      // what the player is told they just played
+const gOf = spin => G * (1 - SLICE.lift * spin);                // gravity a spinning ball feels until it first lands
+const fallLeft = (py, vy, g) => (vy + Math.sqrt(vy * vy + 2 * g * Math.max(0, py - R))) / g;   // s until a ball at py, rising or falling at vy, is back down: the hang it has LEFT
+// A re-aim's bend (NOTES 154): extra velocity v (x and z) brought in on a smoothstep over W s from room time t0, then flown straight on. Its pull
+// (v / W) 6 x (1 - x) (x = the share of W gone) is 0 when it starts (no step: it fades in) and 0 again once it has all of v; it moves the ball
+// v W RAMP(x). reaim() sizes v so the ball lands exactly on the marker. A ball may carry more than one: a swoop's sideways part is its own bend over
+// the whole hang left, and a legacy client's second re-aim adds its own (at most BEND.most).
+const RAMP = x => (x <= 0 ? 0 : x >= 1 ? x - 0.5 : x * x * x * (1 - 0.5 * x)), RAMP1 = x => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x));
+// the bends' share of one step from room time a to b, on top of a ballistic step that already carried the velocity they gave at a (web/scene.js coast() the same)
+function bent(p, v, ws, a, b) {
+  for (const w of ws) {
+    const x0 = (a - w.t0) / w.W, x1 = (b - w.t0) / w.W, dp = w.W * (RAMP(x1) - RAMP(x0)) - RAMP1(x0) * (b - a), dv = RAMP1(x1) - RAMP1(x0);
+    p[0] += w.v[0] * dp; v[0] += w.v[0] * dv; p[2] += w.v[1] * dp; v[2] += w.v[1] * dv;
+  }
+}
+// FIX_ALONG: a ball that would land at qz, reaching it at qvz along the court, bent onto lz by a velocity brought in over W (K = T - W / 2)
+// reaches the bounce at qvz + (lz - qz) / K. Under FIX_ALONG of the pace vz it has now, its landing moves deeper, to where it is exactly that.
+const alongFloor = (lz, qz, qvz, vz, K) => (vz && (qvz + (lz - qz) / K) * Math.sign(vz) < FIX_ALONG * Math.abs(vz) ? qz + (FIX_ALONG * vz - qvz) * K : lz);
+// h s of flight from room time t, exactly: a steady sideways pull c (the curl), gravity g, a re-aim's bends ws. sim(), planFootwork() and reaim() all
+// fly it, so the ball IS the closed form solve(), fallLeft() and web/scene.js coast() use (y used to step v then p and ran g h t / 2 under it)
+function flight(p, v, h, c, g, ws, t) {
+  p[0] += (v[0] + 0.5 * c * h) * h; v[0] += c * h; p[1] += (v[1] - 0.5 * g * h) * h; v[1] -= g * h; p[2] += v[2] * h;
+  if (ws) bent(p, v, ws, t, t + h);
+}
+// the bounce, in place on v. spin/kick only bite on the first one. Shared by the sim and by everything that predicts it.
+function bounceV(v, spin, kick) {
+  v[1] *= -lerp(BOUNCE.up, SLICE.up, spin); const al = lerp(BOUNCE.along, SLICE.along, spin);
+  v[0] = v[0] * al + kick; v[2] *= al;
+}
+
+// blk (near the net): { depth, w } — blend the block curve's landing w of the way in. The flight is the ordinary one for
+// this power, so nothing about the arc jumps: only where it comes down moves.
+function solve(p, side, n, dir, lob, slice, blk, curl = 0) {   // curl: 1 lets a hard flat drive bend (a struck, settled swing); serves, bets and every prediction pass 0
+  const s = sgn(side);
+  let tx = s * clamp(dir * 2.4, -2.5, 2.5);
+  // The stroke decides the shot, the way it does on a real court:
+  //   level swing      -> a drive: more power = deeper and flatter
+  //   underhand scoop  -> the ball goes UP, and much softer: a gentle one is a dink that drops in the kitchen,
+  //                       a big one is a lob that floats high and lands deep
+  // What is CALLED a slice (shotKind: spin wins over lob) flies like one, never on the lob's arc: a scoop with that much spin
+  // (upward share 0.75, |roll| 0.5: live-play-1) went up 2.3 m for 1.3 s. The last 0.05 of spin under the label hands it over.
+  const cut = sliced(slice, lob), u = lofted(lob) * (1 - smooth(cut, SLICE.at - 0.05, SLICE.at)), nu = n < 0.2 ? n * 0.6 : lerp(0.45, 1, (n - 0.2) / 0.8);   // gentle = dink in the kitchen; anything more = a proper lob, deep and high. u: lofted(), not underhand(): past u 0.5 it IS a lob, not half of one
+  // A lob carries no lift (NOTES 90): what flies like a lob (u 0.5 and up) is a plain parabola at G, however the wrist rolled on the scoop.
+  // sliced() itself is untouched, so the label still reads it (a scoop cut hard enough is a slice and never lobs).
+  const spin = cut * (1 - smooth(u, 0.3, 0.5)), g = gOf(spin), kick = s * ((slice || 0) < 0 ? -1 : (slice || 0) > 0 ? 1 : dir >= 0 ? 1 : -1) * (0.55 + 0.45 * Math.abs(dir)) * SLICE.kick * spin;   // always a real break, the way the paddle cut across it
+  const depth = lerp(lerp(2.6, 5.9, n), lerp(1.2, 6.0, nu), u);
+  const tz = -s * Math.min(6.2, blk ? lerp(depth, blk.depth, blk.w) : depth);
+  const px = p[0], py = Math.max(p[1], R), pz = s * Math.max(p[2] * s, 0.3);   // never launch from the far side of the net
+  const top = clamp((n - 0.76) / 0.24, 0, 1) * flat(lob);      // a smash is rewarded: above n 0.76 the drive gets faster still, 0.58 s -> 0.51 s at full power (where the net allows: see fly). Only a level/downward swing: one going up is no smash
+  let T = lerp(lerp(1.2, 0.58, Math.pow(n, 0.85)) - 0.07 * top * top * (3 - 2 * top), lerp(1.2, 1.95, nu), u);   // underhands always travel on a high, slow arc
+  T *= 1 - SLICE.skid * spin * (1 - top) * (1 - u);            // same depth (power still sets it), a touch quicker and, with the lift, LOWER. Not a smash (its pace is already the net's limit) nor a lob (sliced() keeps some spin on a scoop: its arc stays the lob's)
+  T *= lerp(1, Math.sqrt(G / g), u);                           // ...exactly the lob's: the lift would take the top off it (4.63 m -> 4.48 m on his one real lob), so it hangs that much longer instead
+  // From the baseline a flat drive is limited by the net, not by T, and fly()'s 0.05 s steps would hand the 0.07 s straight back (measured:
+  // 0.73 s became 0.76 s). So a smash takes the exact fastest flight that clears: never slower than before, as fast as the net lets it be.
+  const v = [0, 0, 0]; T = fly(v, px, py, pz, tx, tz, T, g, lerp(0.25, SLICE.clear, spin), top > 0 && !u);
+  // wide balls keep drifting after the bounce; pull the target in so the top of the bounce stays within REACH
+  // curl: a lob, a slice-lifted float or a soft drive never bends. It hooks in toward the middle (a banana: it leaves wide and comes back):
+  // a real slice bends the way it will kick, a ball to the middle away from the hitter's side, else the forehand way. Deterministic, so
+  // the server's c is the only one there is. Curling inward also slows the ball sideways at the bounce, which only helps REACH below.
+  const w = smooth(n, CURVE.from, CURVE.full) * flat(lob) * (1 - u) * curl;
+  const cs = spin > SLICE.at && kick ? Math.sign(kick) : Math.abs(tx) >= 0.4 ? -Math.sign(tx) : Math.abs(px) >= 0.2 ? -Math.sign(px) : s;
+  const c = w > 0 ? cs * w * Math.min(CURVE.max, 8 * CURVE.bow / (T * T)) : 0;   // inside the cap, so the REACH clamp below sees the real c T / 2
+  v[0] -= 0.5 * c * T;                                         // starts wide of its line and the pull hooks it back onto the marker exactly at T
+  const ta = lerp(BOUNCE.up, SLICE.up, spin) * (g * T - v[1]) / G, al = lerp(BOUNCE.along, SLICE.along, spin), k = al * ta / T, xc = tx + (tx - px) * k + (kick + al * c * T / 2) * ta;   // it lands moving (tx - px) / T + c T / 2 sideways
+  const late = Math.max(Math.abs(v[0]), Math.abs(v[0] + c * T)) * DT;   // the 60 Hz sim used to land up to a tick after this closed form, a tick further out: fast wide drives topped out at 3.27 m (test/server.test.mjs sweep allows 3.25). It lands ON it now (NOTES 154); the margin is kept, so no landing moved
+  if (Math.abs(xc) + late > REACH) { tx = (Math.sign(xc) * (REACH - late) - (kick + al * c * T / 2) * ta + px * k) / (1 + k); v[0] = (tx - px) / T - 0.5 * c * T; }
+  return { v, land: [tx, tz], T, spin, kick, curl: c };
+}
+
+// the velocity (into v) that lands on (tx, tz) T seconds from now; T grows until the ball clears the net. Returns T.
+function fly(v, px, py, pz, tx, tz, T, g = G, clear = 0.25, exact = false) {
+  if (exact && pz * tz < 0) {                               // height over the net is py + (R - py) f + g f (1 - f) T^2 / 2 with f = the share of the way to the net: solve it for T
+    const f = pz / (pz - tz), need = COURT.net + clear - py - (R - py) * f;
+    if (need > 0) T = Math.max(T, Math.sqrt(2 * need / (g * f * (1 - f))) + 1e-6);
+  }
+  for (let i = 0; i < 80; i++) {
+    v[0] = (tx - px) / T; v[1] = (R - py) / T + 0.5 * g * T; v[2] = (tz - pz) / T;
+    if (pz * tz >= 0) break;                                // already over the net (a re-aim in flight)
+    const tn = -pz / v[2];                                  // time the ball crosses the net plane (> 0)
+    const yn = py + v[1] * tn - 0.5 * g * tn * tn;
+    if (yn >= COURT.net + clear) break;
+    T += 0.05;
+  }
+  return T;
+}
+
+// ---------- a room: one match ----------
+// Everything that used to be one game per process (players, ball, score, serve, bot, ball history, timers) is a local in
+// here, with the functions that touch it. Nothing in a room can reach another room's state: there is no way to name it.
+
+function createRoom(

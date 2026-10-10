@@ -1,6 +1,7 @@
 // The phone's side of a phone paddle (NOTES 34). Motion events -> padmotion.js -> one socket to the game server, which
 // passes every sample on to the tab whose code this is. Nothing is installed: the page is the controller.
 import { PadMotion } from './padmotion.js';
+import { vibrateHit } from './haptics.js';
 
 const $ = id => document.getElementById(id);
 const qs = new URLSearchParams(location.search);
@@ -24,6 +25,8 @@ const IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || navigator.platform ===
 const pad = new PadMotion(IOS ? 'xyz' : 'zxy');      // WebKit names rotationRate x,y,z; Chrome and Firefox follow the spec's z,x,y
 const stats = window.__pad = { sent: 0, hz: 0, rtt: 0, host: false, open: false, get view() { return document.body.dataset.view; }, get naming() { return pad.naming + (pad.locked ? '' : '?'); } };
 let code = clean(qs.get('k')), ws = null, started = false, sawMotion = false, peak = 0, fxText = '';
+let ultimate = { available: false, charge: 0, need: 5, boost: 0, slow: 0, enabled: false }, ultimatePending = false;
+stats.ultimate = ultimate;
 
 // ---------- the code ----------
 if (ok(code)) { $('start-code').textContent = shown(code); view('start'); } else { view('code'); if (qs.get('k')) $('code-note').textContent = 'That code isn’t valid. Codes are P- and 4 letters or numbers.'; }
@@ -54,12 +57,13 @@ async function allow() {                            // iOS asks once per visit, 
 }
 let lock = null;
 if (!('wakeLock' in navigator)) $('live-note').textContent = 'If the screen dims, set Auto-Lock to Never while you play.';
+if (typeof navigator.vibrate !== 'function') $('haptic-note').textContent = 'This browser doesn’t support vibration feedback.';
 async function stayAwake() { try { if ('wakeLock' in navigator && document.visibilityState === 'visible') lock = await navigator.wakeLock.request('screen'); } catch { /* low battery, or not allowed: the screen may dim */ } }
 document.addEventListener('visibilitychange', () => { if (started && document.visibilityState === 'visible') stayAwake(); });
 
 async function start() {
   if (!window.DeviceMotionEvent || !window.DeviceOrientationEvent) { view('nomotion'); return; }
-  if (!window.isSecureContext) { $('nomotion-p').textContent = 'Motion sensors only work on a secure page. Open poddleball.com instead.'; view('nomotion'); return; }
+  if (!window.isSecureContext) { $('nomotion-p').textContent = 'Motion sensors only work on a secure page. Open pingpong.mehdi.ch instead.'; view('nomotion'); return; }
   if (!await allow()) { view('denied'); return; }
   if (!started) { window.addEventListener('deviceorientation', onOrientation); window.addEventListener('devicemotion', onMotion); }
   started = true; sawMotion = false; stayAwake(); connect(); view('live'); render();
@@ -77,12 +81,36 @@ function connect() {
   s.onmessage = e => { let m; try { m = JSON.parse(e.data); } catch { return; }
     if (m.type === 'padhost') { if (m.bad) { view('code'); bad('That code didn’t work. Check it and try again.'); started = false; s.close(); return; } stats.host = !!m.on; render(); }
     else if (m.type === 'pong') stats.rtt = performance.now() - pingAt;
+    else if (m.type === 'ultimateState') {
+      const need = Math.max(1, Math.round(Number.isFinite(m.need) ? m.need : 5));
+      ultimate = { available: m.available === true, charge: Math.max(0, Math.min(need, m.charge | 0)), need, boost: Math.max(0, Math.ceil(m.boost || 0)), slow: Math.max(0, Math.ceil(m.slow || 0)), enabled: m.enabled !== false };
+      ultimatePending = false; stats.ultimate = ultimate; renderUltimate();
+    }
     else if (m.type === 'fx') fx(m); };
   s.onclose = () => { if (ws !== s) return; stats.open = false; stats.host = false; render(); if (started) setTimeout(connect, delay); delay = Math.min(delay * 1.6, 2500); };
   s.onerror = () => {};
 }
 setInterval(() => { if (ws && ws.readyState === 1) { pingAt = performance.now(); ws.send(JSON.stringify({ type: 'ping', c: 1 })); } }, 2000);
 const key = k => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'padkey', k })); };
+function renderUltimate() {
+  const ready = ultimate.charge >= ultimate.need;
+  const enabled = ultimate.available && ready && ultimate.enabled && stats.open && stats.host && !ultimatePending;
+  $('pad-ultimate').hidden = !ultimate.available;
+  $('pad-ultimate').classList.toggle('is-ready', ready);
+  $('pad-ultimate-charge').textContent = `${ultimate.charge} / ${ultimate.need}`;
+  $('pad-ultimate-fill').style.width = `${100 * ultimate.charge / ultimate.need}%`;
+  $('pad-ultimate-meter').setAttribute('aria-valuemax', String(ultimate.need));
+  $('pad-ultimate-meter').setAttribute('aria-valuenow', String(ultimate.charge));
+  for (const id of ['pad-ultimate-boost', 'pad-ultimate-slow']) $(id).disabled = !enabled;
+  const effects = [];
+  if (ultimate.boost) effects.push(`Swing faster · ${ultimate.boost}s`);
+  if (ultimate.slow) effects.push(`Swing + movement slowed · ${ultimate.slow}s`);
+  $('pad-ultimate-status').textContent = effects.length ? effects.join(' / ') : ready ? 'Ultimate ready — choose a power' : `${ultimate.need} orange hits in a row`;
+}
+for (const [id, kind] of [['pad-ultimate-boost', 'boost'], ['pad-ultimate-slow', 'slow']]) $(id).addEventListener('click', () => {
+  if (!ultimate.available || !ultimate.enabled || ultimatePending || ultimate.charge < ultimate.need || !stats.host || !ws || ws.readyState !== 1) return;
+  ultimatePending = true; renderUltimate(); ws.send(JSON.stringify({ type: 'ultimate', kind }));
+});
 // A gripped phone gets its screen pressed all rally long, so these two only answer to a press held for 0.7 s (the button fills up meanwhile).
 for (const [id, k] of [['btn-cal', 'c'], ['btn-center', 'r']]) { const b = $(id); let t = 0;
   const off = () => { clearTimeout(t); b.classList.remove('is-held'); };
@@ -132,10 +160,9 @@ function glow(n, fresh) {
 window.__glow = glow;      // test/pad-glow shots
 const FX_TEXT = { cal: 'Follow the steps on your computer', play: 'Playing', idle: '' };
 function fx(m) {
-  if (m.fx === 'hit') { try { navigator.vibrate && navigator.vibrate(20 + Math.round(50 * (m.b != null ? m.b : m.n || 0))); } catch { /* no buzzer (iOS) */ }
+  if (m.fx === 'hit') { if (!vibrateHit(m.b != null ? m.b : m.n || 0)) $('haptic-note').textContent = 'Vibration feedback is unavailable on this device.';
     glow(m.n || 0, true); }
   else if (m.fx === 'tint') glow(m.n || 0, false);      // the settled swing, a moment after the hit went out on the early guess: recolour, no second buzz
-  else if (m.fx === 'point') { try { navigator.vibrate && navigator.vibrate([30, 60, 30]); } catch { /* same */ } }
   else if (m.fx in FX_TEXT) { fxText = FX_TEXT[m.fx]; render(); }
 }
 
@@ -144,7 +171,8 @@ function render() {
   const on = stats.open && stats.host, was = document.body.dataset.link; document.body.dataset.link = on ? 'on' : 'wait';
   const ring = $('ring'); if (on && was === 'wait' && !still(ring)) ring.animate([{ scale: 1 }, { scale: 1.07, offset: 0.4 }, { scale: 1 }], { duration: 440, easing: 'cubic-bezier(.34,1.56,.64,1)' });      // a little 'hello' when the computer answers
   say($('live-h'), on ? (fxText || 'Connected') : stats.open ? 'Looking for your computer' : 'Reconnecting');
-  say($('live-p'), on ? 'Watch the computer, not the phone. Keep this page open.' : stats.open ? `Open poddleball.com on a computer and press Play. Paddle code: ${shown(code)}.` : 'Check that this phone is online.');
+  say($('live-p'), on ? 'Watch the computer, not the phone. Keep this page open.' : stats.open ? `Open pingpong.mehdi.ch on a computer and press Play. Paddle code: ${shown(code)}.` : 'Check that this phone is online.');
+  renderUltimate();
 }
 let lastSent = 0;
 setInterval(() => { stats.hz = stats.sent - lastSent; lastSent = stats.sent; }, 1000);

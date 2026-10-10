@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Poddle paddle</title>
+<title>Ping Pong paddle</title>
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="robots" content="noindex">
 <meta name="theme-color" content="#0b1116">
@@ -14,12 +14,12 @@
 <body data-view="boot">
 <div id="glow" aria-hidden="true"></div>
 <main>
-  <h1 class="logo-mark"><span>P</span><i class="logo-ball"></i><span>ddle</span></h1>
+  <h1 class="logo-mark" style="font-size:2.2rem"><span>Ping P</span><i class="logo-ball"></i><span>ng</span></h1>
 
   <!-- no code in the link: type the one on the computer -->
   <section class="view" data-name="code">
     <h2>Your phone is the paddle</h2>
-    <p>Open <b>poddleball.com</b> on a computer and press Play. Type the code it shows.</p>
+    <p>Open <b>pingpong.mehdi.ch</b> on a computer and press Play. Type the code it shows.</p>
     <form id="code-form" autocomplete="off">
       <label class="code-field"><span class="code-pre" aria-hidden="true">P-</span><input id="code-in" inputmode="text" autocapitalize="characters" autocorrect="off" spellcheck="false" maxlength="8" placeholder="XXXX" aria-label="Paddle code, after P-"></label>
       <button class="btn" id="code-go" type="submit">Next</button>
@@ -45,12 +45,19 @@
     <div class="ring" id="ring"><div class="ring-fill" id="ring-fill"></div><b id="ring-word">Ready</b></div>
     <h2 id="live-h">Looking for your computer</h2>
     <p id="live-p">Keep this page open. Watch the computer, not the phone.</p>
+    <div class="pad-ultimate" id="pad-ultimate" aria-label="Critical hit streak and ultimate ability" hidden>
+      <div class="pad-ultimate-head"><b>Critical streak</b><span id="pad-ultimate-charge">0 / 5</span></div>
+      <div class="pad-ultimate-meter" id="pad-ultimate-meter" role="progressbar" aria-label="Consecutive legal orange hits" aria-valuemin="0" aria-valuemax="5" aria-valuenow="0"><i id="pad-ultimate-fill"></i></div>
+      <div class="pad-ultimate-actions"><button class="btn btn-sm" id="pad-ultimate-boost" disabled>Swing speedup</button><button class="btn btn-sm" id="pad-ultimate-slow" disabled>Opponent slow</button></div>
+      <small id="pad-ultimate-status">5 orange hits in a row</small>
+    </div>
     <div class="row">
       <button class="btn btn-sm btn-hold" id="btn-cal">Calibrate again</button>
       <button class="btn btn-sm btn-hold" id="btn-center">Recentre</button>
     </div>
     <p class="note">Press and hold a button to use it.</p>
     <p class="note" id="live-note"></p>
+    <p class="note" id="haptic-note"></p>
     <p class="note" id="live-stats"></p>
     <!-- done playing: low and centred, never in a corner (a hand wrapped round the phone rests there), and held, not
          tapped, like the other two buttons -->
@@ -71,7 +78,7 @@
 
   <section class="view" data-name="denied">
     <h2>Motion is switched off</h2>
-    <p id="denied-p">Poddle needs the phone’s motion sensors to be your paddle. Close this tab, scan the code again, and choose <b>Allow</b>.</p>
+    <p id="denied-p">Ping Pong needs the phone’s motion sensors to be your paddle. Close this tab, scan the code again, and choose <b>Allow</b>.</p>
     <button class="btn" id="retry2">Try again</button>
   </section>
 </main>

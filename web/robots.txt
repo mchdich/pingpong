@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://poddleball.com/sitemap.xml
+Sitemap: https://pingpong.mehdi.ch/sitemap.xml

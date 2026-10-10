@@ -1,0 +1,9 @@
+/* A quiet corner of the original court UI; the score and paddle stay clear. */
+.release-notes{position:fixed;top:max(6.5rem,96px);right:max(var(--edge,1rem),12px);z-index:25;width:270px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 120px);overflow:auto;padding:14px 16px;border:2px solid var(--line-soft,#a9e0f6);border-radius:var(--r-md,1rem);background:linear-gradient(180deg,#fff,var(--sky-1,#f6fafd));box-shadow:var(--sh-2,0 4px 12px #28506e22);color:var(--ink-strong,#4b535b);font:500 12px/1.5 var(--font,system-ui,sans-serif);pointer-events:none}
+.release-notes h2{margin:0 30px 9px 0;font-size:16px;line-height:1.3;font-weight:800;color:var(--me-ink,#1b63b8)}
+.release-notes ul{margin:0;padding-left:17px}
+.release-notes li+li{margin-top:5px}
+.release-notes-close{position:absolute;right:8px;top:7px;width:30px;height:30px;border:0;border-radius:50%;background:var(--sky-2,#eaf3f8);color:var(--ink,#555e67);font:700 23px/1 var(--font,system-ui,sans-serif);cursor:pointer;pointer-events:auto}
+.release-notes-close:hover{background:var(--sky-3,#d9e9f2)}
+.release-notes-close:focus-visible{outline:3px solid var(--line,#34beed);outline-offset:2px}
+@media(max-width:700px){.release-notes{top:max(6rem,72px);width:235px;max-height:calc(100dvh - 100px);padding:11px 13px;font-size:11px}.release-notes h2{font-size:14px}}

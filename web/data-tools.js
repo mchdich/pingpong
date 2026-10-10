@@ -9,7 +9,7 @@
   async function download() {
     say('Preparing your file.');
     let r; try { r = await call('/api/export', 'POST'); } catch { r = null; }
-    if (!r || !r.ok) return say(r && r.status === 404 ? 'Nothing is saved for this browser. If you have an account, sign in to Poddle first, then return here.' : r && r.status === 429 ? 'Too many downloads. Please try again later.' : 'The download is not available right now. Please try again later.');
+    if (!r || !r.ok) return say(r && r.status === 404 ? 'Nothing is saved for this browser. If you have an account, sign in to Ping Pong first, then return here.' : r && r.status === 429 ? 'Too many downloads. Please try again later.' : 'The download is not available right now. Please try again later.');
     const blob = await r.blob(), m = /filename="(poddle-data-[0-9-]{10}\.json)"/.exec(r.headers.get('Content-Disposition') || '');      // only a name of our own shape is used
     const url = URL.createObjectURL(blob), a = document.createElement('a'); a.href = url; a.download = m ? m[1] : 'poddle-data.json'; a.hidden = true; document.body.append(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 10000); say('Your file has been downloaded.');
@@ -21,9 +21,9 @@
     if (!r || !r.ok) return say('The deletion did not go through. Please try again later.');
     let d = {}; try { d = (await r.json()).deleted || {}; } catch { d = {}; }      // the server says what it deleted: a 200 alone is not a deletion
     try { localStorage.removeItem('poddle.device'); } catch { /* nothing to remove */ }
-    say(d.account === true ? 'Your account and your statistics have been deleted. If Poddle is open in another tab, reload it.'
-      : d.device === true ? 'The statistics saved by this browser have been deleted. If you also have a Poddle account, sign in to Poddle first, then return here to delete it.'      // the session may have ended: the account is untouched until it is deleted while signed in
-      : 'Nothing was saved for this browser. If you have an account, sign in to Poddle first, then return here.');
+    say(d.account === true ? 'Your account and your statistics have been deleted. If Ping Pong is open in another tab, reload it.'
+      : d.device === true ? 'The statistics saved by this browser have been deleted. If you also have a Ping Pong account, sign in to Ping Pong first, then return here to delete it.'      // the session may have ended: the account is untouched until it is deleted while signed in
+      : 'Nothing was saved for this browser. If you have an account, sign in to Ping Pong first, then return here.');
   }
   $('btn-export')?.addEventListener('click', download);
   $('btn-delete')?.addEventListener('click', () => { $('data-confirm').hidden = false; say(''); $('btn-delete-no')?.focus(); });      // Cancel is focused: a second press deletes nothing

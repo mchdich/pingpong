@@ -50,7 +50,7 @@ const readSession = (header, secure = secureCookies()) => { const v = parseCooki
 const readNonce = (header, secure = secureCookies()) => { const v = parseCookie(header)[cookieNames(secure).nonce]; return v && NONCE_RE.test(v) ? v : null; };        // the nonce cookie, format-checked, or null
 
 // ---- Origin (3.4) ----
-const HOSTED_ORIGINS = new Set(['https://poddleball.com', 'https://www.poddleball.com', 'https://poddle.fly.dev']);
+const HOSTED_ORIGINS = new Set([process.env.SITE_URL || 'https://pingpong.mehdi.ch', 'https://' + (process.env.FLY_APP_NAME || 'pingpong-mehdi-ch') + '.fly.dev']);
 const LOCAL_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?$/;                          // any port: tests use 8140-9430
 const HOST_RE = /^[a-z0-9.\-]{1,253}(:\d{1,5})?$|^\[[0-9a-f:.]{2,45}\](:\d{1,5})?$/;
 function originAllowed(origin, host, { hosted = !!process.env.FLY_APP_NAME, scheme = 'http' } = {}) {   // true only for the pages allowed to use a session or write a profile; 'null' and absent are false

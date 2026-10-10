@@ -2303,3 +2303,13 @@ body[data-settings="menu"]::after{opacity:1;visibility:visible;transition-delay:
 }
 @media (max-width:480px){ .tut-card{padding:var(--s-5) var(--s-4) var(--s-4)} .tut-shots,.tut-keys{grid-template-columns:1fr} .tut-page{min-height:0} .tut-title{font-size:var(--t-lg)} }
 .tut-next.is-last::before{opacity:.3}
+
+/* Charged abilities keep the original HUD layout; their block accents match the court effects. */
+.ultimate-card{position:fixed;left:var(--edge);bottom:var(--edge);z-index:var(--z-hud);width:18rem;max-width:43vw;padding:.7rem;border:.2rem solid #4d75d5;border-radius:.65rem;background:linear-gradient(145deg,#fff,#e5edff);box-shadow:0 .25rem 0 #2d4482,var(--sh-hud);font-weight:800;color:var(--ink-strong)}
+.ultimate-head{display:flex;justify-content:space-between;align-items:center;gap:.7rem;font-size:.85rem;letter-spacing:.04em}.ultimate-head b{color:#5341b9}.ultimate-head span{color:#2c60a0;white-space:nowrap}
+.ultimate-meter{height:.75rem;margin:.5rem 0;border:.12rem solid #3c579a;border-radius:.2rem;background:#ccd8f0;overflow:hidden}.ultimate-meter i{display:block;height:100%;width:0;background:repeating-linear-gradient(90deg,transparent 0 calc(20% - 2px),#ffffff70 calc(20% - 2px) 20%),linear-gradient(90deg,#ffb534,#ee6e25);transition:width .18s ease-out}
+.ultimate-actions{display:flex;gap:.4rem}.ultimate-button{flex:1;min-width:0;min-height:2.3rem;padding:.3rem .4rem;border:.14rem solid #2a6cbb;border-radius:.4rem;box-shadow:0 .16rem 0 #21568f;background:linear-gradient(#5cdcff,#309fef);font:800 .76rem var(--font);color:#173453;cursor:pointer}.ultimate-slow{border-color:#8b3cca;box-shadow:0 .16rem 0 #692ea0;background:linear-gradient(#d8a5ff,#b970ed);color:#442465}.ultimate-button .keycap{font-size:.65rem;min-width:1rem;height:1rem;margin-left:.15rem}.ultimate-button:disabled{opacity:.48;cursor:default;filter:saturate(.45)}.ultimate-button:not(:disabled):active{transform:translateY(.12rem);box-shadow:none}.ultimate-button:focus-visible{outline:.18rem solid var(--ball);outline-offset:.15rem}
+.ultimate-card>small{display:block;margin-top:.45rem;font-weight:700;font-size:.69rem;line-height:1.25}.ultimate-card.is-ready{border-color:#cb9d25;background:linear-gradient(145deg,#fffde6,#fff1bd)}.ultimate-card.is-ready .ultimate-head b{color:#985515}
+body[data-overlay] .ultimate-card,body[data-role="spectator"] .ultimate-card{display:none}
+@media(max-width:640px){.ultimate-card{max-width:46vw;width:16rem;padding:.5rem}.ultimate-actions{flex-direction:column}.ultimate-button{min-height:2rem}}
+@media(prefers-reduced-motion:reduce){.ultimate-meter i{transition:none}}

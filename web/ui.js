@@ -209,6 +209,27 @@ export function setScore(me, them) {
 export function setServe(who) { $('sv-me').classList.toggle('on', who === 'me'); $('sv-them').classList.toggle('on', who === 'them'); }
 export function setRally(n) { const el = $('rally'); if (el.textContent === String(n)) return; el.textContent = n; if (n > 0) restart(el, 'pop'); }
 
+let ultimateHandler = null;
+export function onUltimate(fn) { ultimateHandler = typeof fn === 'function' ? fn : null; }
+for (const [id, kind] of [['ultimate-boost', 'boost'], ['ultimate-slow', 'slow']]) on2(id, 'click', () => { if (ultimateHandler) ultimateHandler(kind); });
+export function setUltimate(o = {}) {
+  const card = $('ultimate-card'); if (!card) return;
+  card.hidden = !o.visible || o.available === false;
+  const need = Math.max(1, Math.round(Number.isFinite(o.need) ? o.need : 5));
+  const charge = Math.max(0, Math.min(need, Math.round(Number.isFinite(o.charge) ? o.charge : 0)));
+  const ready = charge >= need, enabled = !!o.enabled && ready && o.available !== false;
+  card.classList.toggle('is-ready', ready);
+  $('ultimate-charge').textContent = `${charge} / ${need}`;
+  $('ultimate-fill').style.width = `${100 * charge / need}%`;
+  $('ultimate-meter').setAttribute('aria-valuemax', String(need));
+  $('ultimate-meter').setAttribute('aria-valuenow', String(charge));
+  for (const id of ['ultimate-boost', 'ultimate-slow']) $(id).disabled = !enabled;
+  const effects = [];
+  if (o.boost > 0) effects.push(`Swing faster · ${Math.ceil(o.boost)}s`);
+  if (o.slow > 0) effects.push(`Swing + movement slowed · ${Math.ceil(o.slow)}s`);
+  $('ultimate-status').textContent = effects.length ? effects.join(' / ') : ready ? 'Ultimate ready — choose a power' : `${need} orange hits in a row`;
+}
+
 // ---------- events ----------
 export function callout(kind, them = false) {              // only the shot's name, never praise
   const text = shotName(kind); if (!text) return;
@@ -365,16 +386,15 @@ export function hold(name, left) {
 // ---------- connection status ----------
 // What is in the player's hand (NOTES 34): an AirPod through the helper on this Mac, or a phone through its page.
 const PADDLE = {
-  airpod: { name: 'AirPod', wait: 'Open Poddle Helper, then take one AirPod out and hold it.', bad: 'Signal lost. Check Poddle Helper is open and the AirPod is connected to this Mac.', lost: 'AirPod signal lost', hold: 'Hold the AirPod like a paddle handle, pointing at the screen.', tilt: 'Tip the front up toward the ceiling.', waiting: 'Waiting for the AirPod' },
-  phone: { name: 'Phone', wait: 'Scan the code with your phone’s camera.', bad: 'Signal lost. Wake the phone and keep its Poddle page open.', lost: 'Phone signal lost', hold: 'Hold the phone like a paddle handle, edge up, top end pointing at the screen.', tilt: 'Tip the top end up toward the ceiling.', waiting: 'Waiting for the phone' },
+  phone: { name: 'Phone', wait: 'Scan the code with your phone’s camera.', bad: 'Signal lost. Wake the phone and keep its Ping Pong page open.', lost: 'Phone signal lost', hold: 'Hold the phone like a paddle handle, edge up, top end pointing at the screen.', tilt: 'Tip the top end up toward the ceiling.', waiting: 'Waiting for the phone' },
 };
-let paddle = 'airpod';
+let paddle = '';
 export function setPaddle(kind) {
   if (!PADDLE[kind] || kind === paddle) return; paddle = kind; const P = PADDLE[kind];
   ROW.airpod.wait = P.wait; ROW.airpod.bad = P.bad; LOST.airpod = P.lost; LEAD.hold = P.hold; LEAD.tilt = P.tilt;
   setText($('row-airpod-name'), P.name); setText($('set-airpod-name'), P.name);
   $('calart')?.classList.toggle('is-phone', kind === 'phone');                                  // the calibration drawing: a phone in the fist, not a bud
-  const tog = $('tog-airpod')?.querySelector('span'); setText(tog, kind === 'phone' ? 'Show phone' : 'Show AirPod');
+  const tog = $('tog-airpod')?.querySelector('span'); setText(tog, 'Show phone');
   const v = status.airpod; if (v) { status.airpod = null; setStatus({ airpod: v }); }      // the row says its line again, in the new words
 }
 export const paddleKind = () => paddle;
@@ -411,12 +431,12 @@ export function onPaddleSwap(fn) {                                              
     const on = seg.querySelector('[aria-checked="true"]'), other = [...seg.querySelectorAll('[data-paddle]')].find(b => b !== on); if (other) { other.focus(); fn(other.dataset.paddle); } });
 }
 const ROW = {
-  airpod: { ok: '', wait: 'Open Poddle Helper, then take one AirPod out and hold it.', bad: 'Signal lost. Check Poddle Helper is open and the AirPod is connected to this Mac.' },
+  airpod: { ok: '', wait: 'Scan the code with your phone’s camera.', bad: 'Signal lost. Wake the phone and keep its Ping Pong page open.' },
   game: { ok: '', wait: 'Connecting to the game', bad: 'Can’t reach the game. Trying again.' },
   camera: { ok: 'Stand where the camera can see you.', wait: 'Allow the camera so stepping moves you on court.', bad: 'No camera. The game moves you.', off: 'No camera. The game moves you.' },
 };
 const STATE_WORD = { ok: 'Ready', wait: 'Waiting', bad: 'Problem', off: 'Off' };
-const LOST = { airpod: 'AirPod signal lost', game: 'Reconnecting to the game' };
+const LOST = { airpod: 'Phone signal lost', game: 'Reconnecting to the game' };
 const status = {}, badSince = {}, told = {};
 export function setStatus(next) {
   const now = performance.now();
@@ -440,7 +460,7 @@ export function setServerAddress(text) { setText($('downurl'), String(text).repl
 // e = the MotionModel 'cal' event { stage: 'hold'|'tilt', progress, ok, msg }. The big headline always says what to do NOW
 // (it is the only thing read from two metres away), so it follows the event, not just the stage.
 const HOLD_SECONDS = 5;
-const LEAD = { hold: 'Hold the AirPod like a paddle handle, pointing at the screen.', tilt: 'Tip the front up toward the ceiling.', settle: 'Keep it there until the bar fills.', done: 'Done. Loading the court.' };
+const LEAD = { hold: 'Hold the phone edge up, top end pointing at the screen.', tilt: 'Tip the phone’s top end up toward the ceiling.', settle: 'Keep it there until the bar fills.', done: 'Done. Loading the court.' };
 let calPrev = { ok: true, msg: '' }, badUntil = 0, badHead = '';
 export function calibrationReset() {
   calPrev = { ok: true, msg: '' }; badUntil = 0;
@@ -473,6 +493,7 @@ export function calibration(e, { waiting = false, camLost = false } = {}) {
 }
 
 // ---------- small things ----------
+export function setTurn(name, own, serve) { const el = $('turn-note'); if (!el) return; el.hidden = !name; if (name) setText(el, own ? (serve ? 'Your serve' : 'Your return') : `${name} ${serve ? 'serves' : 'returns'}`); }
 export function setMode(name) { setText($('mode'), name); for (const o of $('move-seg')?.children || []) o.setAttribute('aria-checked', String(o.dataset.move === String(name).toLowerCase())); }      // how you move lives in the settings panel now (docs/NEXT.md 14d)
 // Matt's level, or null when the other seat is not Matt: the B key hint and the settings Difficulty row show only against him
 export function setBot(level) { const on = !!level; show('key-bot', on); show('set-bot', on); show('bot-pick', on); if (!on) return; swapText($('bot-level'), String(level), 'ov-pop');
@@ -496,7 +517,7 @@ const CAM_TEXT = {
   nocam: ['No camera found', 'Plug in a webcam, or check it isn’t switched off or covered, then press Try again.'],
   busy: ['The camera won’t start', 'Another app may be using it, or your computer may be blocking it. Close any app with the camera on (Zoom, Teams and the like), check the steps below, then press Try again.'],      // Windows' privacy switch in Chrome/Edge also lands here (NotReadableError), so the steps show
   dismissed: ['You closed the camera prompt', 'Press Try again, then choose Allow when your browser asks. If it doesn’t ask, use the steps below.'],      // Chrome blocks after ~3 closes and still says 'dismissed': the steps stay
-  insecure: ['This page can’t use a camera', 'Browsers only share the camera with a secure page. Open poddleball.com, or localhost on this computer.'],
+  insecure: ['This page can’t use a camera', 'Browsers only share the camera with a secure page. Open pingpong.mehdi.ch, or localhost on this computer.'],
   other: ['The camera didn’t start', 'Check your browser lets this page use the camera, then press Try again.'],
 };
 const CAM_BROWSER = { chrome: 'Chrome', edge: 'Edge', safari: 'Safari', firefox: 'Firefox' };
@@ -513,7 +534,7 @@ export function camPrimer(o = {}) {
   if (steps) { const b = CAM_BROWSER[o.browser] ? o.browser : 'chrome', os = ['mac', 'win', 'ios'].includes(o.os) ? o.os : '', more = $('cam-more-list'), mine = os === 'ios' ? ['ios'] : [b];      // an iPad: only its Settings app, the desktop menus don't exist there
     if (os && os !== 'ios' && !(os === 'mac' && b === 'safari')) mine[kind === 'system' || kind === 'busy' ? 'unshift' : 'push'](os);      // Safari needs no switch in macOS's Camera list (it is Apple's own). A 'denied by system' error: the computer's switch first
     for (const el of help.querySelectorAll('.cam-browser')) setText(el, CAM_BROWSER[b]);
-    for (const el of help.querySelectorAll('.cam-host')) setText(el, location.hostname || 'poddleball.com');      // a local copy is 'Settings for localhost'
+    for (const el of help.querySelectorAll('.cam-host')) setText(el, location.hostname || 'pingpong.mehdi.ch');      // a local copy is 'Settings for localhost'
     for (const f of mine) help.insertBefore(help.querySelector(`.cam-how[data-for="${f}"]`), $('cam-more'));
     for (const f of ['chrome', 'edge', 'safari', 'firefox', 'mac', 'win', 'ios']) if (!mine.includes(f)) more.appendChild(help.querySelector(`.cam-how[data-for="${f}"]`));
     for (const el of help.querySelectorAll('.cam-how')) el.classList.toggle('is-main', mine.includes(el.dataset.for)); }
@@ -634,6 +655,7 @@ export function setSettings(o = {}) {
   if ('bodyNote' in o) { const n = $('move-note'); if (n) { setText(n, o.bodyNote || 'Body needs a camera'); if (o.bodyNote) n.hidden = false; } }      // the camera is off but can be asked for: picking Body asks, and the row says so      // no camera: Body cannot be picked, and the row says why
   if ('spectator' in o) $('settings')?.classList.toggle('is-spectator', !!o.spectator);
   if ('paddle' in o) { show('set-paddle', !!o.paddle); for (const b of $('paddle-seg2')?.children || []) b.setAttribute('aria-checked', String(b.dataset.paddle === o.paddle)); }      // null: only an AirPod can be the paddle here, nothing to pick
+  if ('hand' in o) for (const b of $('hand-seg')?.children || []) b.setAttribute('aria-checked', String(b.dataset.hand === o.hand));
 }
 // forfeit: mid-match against a person (or a tournament match), leaving is a forfeit and the button says so.
 // canPause false: the note says why (a tournament match, or any online game against a person)
@@ -666,6 +688,7 @@ export function setPaused(on) {                            // the rest is CSS: b
   on2('tog-full', 'click', () => fullscreen());
   on2('move-seg', 'click', e => { const o = e.target.closest('[data-move]'); if (o && !o.disabled) call('move', o.dataset.move); });      // main.js answers with setMode / setBot: the UI flips nothing itself
   on2('paddle-seg2', 'click', e => { const o = e.target.closest('[data-paddle]'); if (o) call('paddle', o.dataset.paddle); });      // phone <-> AirPod at any time, not only on the set-up screen
+  on2('hand-seg', 'click', e => { const o = e.target.closest('[data-hand]'); if (o) call('hand', o.dataset.hand); });
   on2('bot-seg', 'click', e => { const o = e.target.closest('[data-level]'); if (o) call('bot', +o.dataset.level); });
   on2('pick-seg', 'click', e => { const o = e.target.closest('[data-level]'); if (o) call('bot', +o.dataset.level); });      // the court's row: the same request as the settings row (main.js sends {type:'bot', level})
   on2('btn-recenter', 'click', e => { restart(e.currentTarget, 'ov-spin'); call('recenter'); }); on2('btn-leave-room', 'click', () => call('leave'));      // Recentre: the button spins its svg (restart() cannot replay an SVG itself: no offsetWidth)
@@ -863,7 +886,7 @@ export function lobbyView(name, { code, watch } = {}) {
   if (sl.classList.contains('is-active') && sl.dataset.live && was !== view) { const d = (VIEW_DEPTH[view] ?? 0) - (VIEW_DEPTH[was] ?? 0); if (d) sl.dataset.dir = d > 0 ? 'fwd' : 'back'; else delete sl.dataset.dir; }      // the view slides in from the side it lies on (ui.css); a re-call of the same view keeps its entrance
   sl.dataset.live = '1';
   for (const el of document.querySelectorAll('#screen-lobby .lobby-view')) el.hidden = el.dataset.view !== view; sl.dataset.view = view; tilesFit();      // data-view: a phone's home hides Back (ui.css)
-  { const t = $('lobby-title'), tt = view === 'bracket' && ts ? `Tournament ${ts.code}` : mobile && view === 'home' ? 'Poddle' : VIEW_TITLE[view]; if (t.textContent !== tt) { setText(t, tt); restart(t, 'swap'); } } codeError(''); show('name-row', !noName(view)); askWatch(null); show('tour-ended', false); tourConfirm(false);
+  { const t = $('lobby-title'), tt = view === 'bracket' && ts ? `Tournament ${ts.code}` : mobile && view === 'home' ? 'Ping Pong' : VIEW_TITLE[view]; if (t.textContent !== tt) { setText(t, tt); restart(t, 'swap'); } } codeError(''); show('name-row', !noName(view)); askWatch(null); show('tour-ended', false); tourConfirm(false);
   if (view === 'bracket') drawBracket(); else if (view === 'tour') drawTour(); else if (view === 'profile' && was !== 'profile' && on.profile) on.profile();      // Your stats: main.js asks web/profile.js to fetch and draw it
   else if (view === 'leaderboard' && was !== 'leaderboard' && on.leaderboard) on.leaderboard();      // the global leaderboard: web/profile.js fetches and draws it (NOTES 126)
   else if (view === 'friends' && was !== 'friends' && on.friends) on.friends();      // Friends (docs/SOCIAL.md 6): web/social.js builds, fetches and draws it
@@ -918,9 +941,9 @@ function rowsOf() {                                                             
   const out = [];
   for (const t of list.tours) out.push({ kind: 'tour', code: t.code, who: `${String(t.host || 'Someone').slice(0, 24)}’s tournament`, meta: `${t.n | 0} of ${t.max | 0 || 16} joined`, go: 'Join' });
   for (const r of list.rooms) { const k = kindOf(r), w = r.watchers | 0, hi = nm(r, 0) && nm(r, 0) !== 'Matt' ? 0 : nm(r, 1) && nm(r, 1) !== 'Matt' ? 1 : -1, human = hi < 0 ? '' : nm(r, hi), hr = hi >= 0 && rg(r, hi);
-    if (k === 'open') out.push({ kind: k, code: r.code, who: !r.players ? 'Empty' : `${human || 'A player'} is waiting`, segs: r.players ? [[human || 'A player', hr], ' is waiting'] : null, meta: w > 0 ? `${w} watching` : '', go: 'Join', watch: r.players > 0 && r.watch > 0, w, players: r.players > 0 });      // players: a human is sitting there waiting. segs: who, in pieces: [name, registered] | plain text
+    if (k === 'open') out.push({ kind: k, code: r.code, who: !r.players ? 'Empty' : `${human || 'A player'} is waiting`, segs: r.players ? [[human || 'A player', hr], ' is waiting'] : null, meta: `${r.mode === '2v2' ? '2v2 · ' + (r.players | 0) + '/4' : '1v1'}${w > 0 ? ' · ' + w + ' watching' : ''}`, go: 'Join', watch: r.players > 0 && r.watch > 0, w, players: r.players > 0 });      // players: a human is sitting there waiting. segs: who, in pieces: [name, registered] | plain text
     else if (k === 'ask') out.push({ kind: k, code: r.code, who: `${human || 'A player'} vs Matt`, segs: [[human || 'A player', hr], ' vs Matt'], meta: sc(r), go: 'Ask to play', watch: r.watch > 0, w });
-    else out.push({ kind: k, code: r.code, who: `${nm(r, 0) || 'Player 1'} vs ${nm(r, 1) || 'Player 2'}`, segs: [[nm(r, 0) || 'Player 1', rg(r, 0)], ' vs ', [nm(r, 1) || 'Player 2', rg(r, 1)]], meta: (r.live === false ? 'Starting' : sc(r)) + (w > 0 ? ` · ${w} watching` : ''), go: r.watch > 0 ? 'Watch' : 'Can’t watch', full: !(r.watch > 0), w }); }
+    else out.push({ kind: k, code: r.code, who: `${nm(r, 0) || 'Player 1'} vs ${nm(r, 1) || 'Player 2'}`, segs: [[nm(r, 0) || 'Player 1', rg(r, 0)], ' vs ', [nm(r, 1) || 'Player 2', rg(r, 1)]], meta: (r.mode === '2v2' ? '2v2 · ' : '1v1 · ') + (r.live === false ? 'Starting' : sc(r)) + (w > 0 ? ` · ${w} watching` : ''), go: r.watch > 0 ? 'Watch' : 'Can’t watch', full: !(r.watch > 0), w }); }
   return mobile ? out.map(phoneRow).filter(Boolean) : out;
 }
 // A phone watches, never joins (NOTES 149): a row it can watch says Watch and watches on a tap; an empty court has nothing to see and is left out
@@ -1032,7 +1055,7 @@ export function setRoom(code, link = '') {
 export function backLabel(text) { for (const t of document.querySelectorAll('.screen .back-text')) setText(t, text); }      // 'Cancel' while a paddle swap mid-game can still be undone
 export function titleRoom(code, watch) { $('title-room').hidden = !code; setText($('title-room-code'), code || ''); setText($('title-room-spec'), watch ? '\u00a0as spectator' : ''); }     // opened from a shared link (&watch=1: 'as spectator')
 // What lands on the clipboard: a line to paste into a chat, then the link.
-const INVITE = { play: 'Play me in Poddle, pickleball with your phone as the paddle:', watch: 'Watch me play Poddle, pickleball with your phone as the paddle:' };
+const INVITE = { play: 'Play me in Ping Pong, with your phone as the paddle:', watch: 'Watch me play Ping Pong, with your phone as the paddle:' };
 async function copyLink(btn, watch) {      // watch: the viewer link (&watch=1), which opens the court as a spectator
   let href = $('share-link').dataset.href; if (!href) return;
   if (watch) { const u = new URL(href); u.searchParams.set('watch', '1'); href = u.href; }
@@ -1046,7 +1069,8 @@ const COPY = [['copy-menu', 'btn-copy'], ['room-menu', 'room-pill']];
 const copyOpen = (m, open) => { $(m).classList.toggle('is-open', open); $(COPY.find(c => c[0] === m)[1]).setAttribute('aria-expanded', open); };
 {
   // no name, no seat: every choice on the home view waits for it (the field shakes and takes focus), and so does the last button of each view
-  $('btn-quick').addEventListener('click', () => { if (!needName() && on.quick) on.quick(); });
+  for (const id of ['match-mode', 'create-match-mode']) { const seg = $(id); if (!seg) continue; const pickMode = b => { for (const o of seg.children) { o.setAttribute('aria-checked', String(o === b)); o.tabIndex = o === b ? 0 : -1; } }; seg.addEventListener('click', e => { const b = e.target.closest('[data-match]'); if (b) pickMode(b); }); seg.addEventListener('keydown', e => { if (!['ArrowLeft', 'ArrowRight'].includes(e.key)) return; e.preventDefault(); const b = seg.children[e.key === 'ArrowLeft' ? 0 : 1]; pickMode(b); b.focus(); }); }
+  $('btn-quick').addEventListener('click', () => { if (!needName() && on.quick) on.quick($('match-mode')?.querySelector('[aria-checked="true"]')?.dataset.match || '1v1'); });
   on2('btn-courts', 'click', () => { if (mobile || !needName()) lobbyView('courts'); });      // a phone asks for the name in Courts, at Watch (its home has no name row)
   on2('btn-create', 'click', () => { if (!needName()) lobbyView('create'); });
   on2('btn-tour', 'click', () => { if (ts && !ts.you?.viewer && ts.phase !== 'done') { tcall('open'); return; } if (!needName()) tcall('create'); });      // one press makes one (docs/COURTS-TOURNEY.md 4.6 item 1). Already in one: Your tournament
@@ -1059,7 +1083,7 @@ const copyOpen = (m, open) => { $(m).classList.toggle('is-open', open); $(COPY.f
     el.setAttribute('role', 'button'); el.tabIndex = 0; el.title = 'See all ranks'; el.setAttribute('aria-label', 'See all ranks'); el.classList.add('is-link');
     el.addEventListener('click', () => lobbyView('ranks')); el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); lobbyView('ranks'); } }); } }
   on2('btn-st-info', 'click', () => lobbyView('ranks'));      // the (i) beside the rank: how ranks work is the Ranks page's job, not the hero's (NOTES 158)
-  $('btn-create-go').addEventListener('click', () => { if (!needName() && on.create) on.create($('seg').querySelector('[aria-checked="true"]').dataset.public === '1'); });
+  $('btn-create-go').addEventListener('click', () => { if (!needName() && on.create) on.create($('seg').querySelector('[aria-checked="true"]').dataset.public === '1', $('create-match-mode')?.querySelector('[aria-checked="true"]')?.dataset.match || '1v1'); });
   on2('bot-levels', 'click', e => { const b = e.target.closest('[data-level]'); if (b && !needName() && on.bot) on.bot(+b.dataset.level); });       // one click plays: no second confirm
   on2('lobby-bot', 'keydown', e => { let d = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key]; if (!d) return; e.preventDefault(); const bs = [...$('bot-levels').children], i = bs.indexOf(document.activeElement);
     if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && getComputedStyle($('bot-levels')).gridTemplateColumns.split(' ').length === 2) d *= 2;      // two by two: up and down move a row
@@ -1202,7 +1226,7 @@ export function tourConfirm(on) { const c = $('tour-confirm'); if (!c) return; c
 // ---- copying: the code alone (a click on it), or the invite (a line to paste, then the link)
 let copiedT = 0;
 async function clip(text) { try { await navigator.clipboard.writeText(text); } catch { const t = document.createElement('textarea'); t.value = text; t.style.cssText = 'position:fixed;opacity:0'; document.body.append(t); t.select(); try { document.execCommand('copy'); } catch { /* nothing more to try */ } t.remove(); } }
-const invite = () => ts ? (tLink ? `Join my Poddle tournament. Code ${ts.code}: ${tLink}` : ts.code) : '';
+const invite = () => ts ? (tLink ? `Join my Ping Pong tournament. Code ${ts.code}: ${tLink}` : ts.code) : '';
 const tapWord = () => (matchMedia('(hover: none)').matches ? 'Tap' : 'Click');      // a phone is never clicked
 function copied(labelId, text, back) { const l = $(labelId); if (!l) return; setText(l, text); clearTimeout(copiedT); copiedT = setTimeout(() => { copiedT = 0; setText(l, back()); }, 1500); }
 // ---- the HUD: a pill in the corner while in one of its courts (warm-up: the count; a match: the round and who), and the host's Start
@@ -1408,7 +1432,7 @@ function drawRanks() {
 // from the old one over it); the pill is the change as applied; a small line says why when nothing changed. A changed rank or division is the ceremony at 2100 ms.
 // none: 'signin' | 'username' draws one quiet line in the row's place (a reply to the game just played, not an announcement). The card gets .has-trophies for the room the row takes.
 const MATT_LV = ['Rookie', 'Club', 'Pro', 'Tour'], MATT_NEED = [0, 1, 1, 3, 3, 2, 2, 2];      // Matt's wire level -> name; per rank, the lowest level a win pays at: the server says it (t.need, server/ladder.js TIERS[].matt); the table is the fallback for an older server
-const TROPHY_WHY = { not_counted: 'This match didn’t count', self: 'Matches against yourself don’t count', restart: 'Matches resumed after a Poddle update don’t count', too_short: 'Too short to count', left_early: 'They left before the game finished' };
+const TROPHY_WHY = { not_counted: 'This match didn’t count', self: 'Matches against yourself don’t count', restart: 'Matches resumed after a Ping Pong update don’t count', too_short: 'Too short to count', left_early: 'They left before the game finished' };
 const NONE_LINE = { signin: 'Sign in to earn trophies', username: 'Pick a username to earn trophies' };
 let upT = 0, rollT = [];
 const ROLL_AT = 1100;      // ms after the card: the row has popped (900) and the pill (1000); then the count climbs

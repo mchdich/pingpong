@@ -30,7 +30,7 @@ export function createPodView(el) {
   const glass = new T.Mesh(new T.ShapeGeometry(shape, 10), new T.MeshStandardMaterial({ color: 0x1d2a3a, roughness: 0.15, metalness: 0.1, emissive: 0x0e2238, emissiveIntensity: 0.6 })); glass.scale.set(0.93, 0.95, 1); glass.position.z = 0.052; phone.add(glass);
   const notch = new T.Mesh(new T.CapsuleGeometry(0.03, 0.1, 6, 12), dark); notch.rotation.z = Math.PI / 2; notch.position.set(0, h / 2 - 0.07, 0.056); phone.add(notch);
   const bump = new T.Mesh(new T.BoxGeometry(0.2, 0.2, 0.03), steel); bump.position.set(-0.15, h / 2 - 0.17, -0.06); phone.add(bump);
-  phone.position.y = -0.2; phone.rotation.y = -1.25; phone.visible = false;      // held edge up (NOTES 38): the screen faces sideways, turned a little toward you so it still reads as a phone
+  phone.position.y = -0.2; phone.visible = false;      // phone screen and paddle face share the same axes
   const held = new T.Group(); held.add(pod, phone); scene.add(held);
 
   // reference: faint upright ghost of the calibrated pose + a floor ring, so tilt is readable at a glance

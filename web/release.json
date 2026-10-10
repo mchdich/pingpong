@@ -1,0 +1,9 @@
+{
+  "id": "swing-intention-1791523809496",
+  "publishedAt": "2026-10-09T05:30:09.496Z",
+  "changes": [
+    "Aim now follows your measured swing direction with pointing as a trim. Take-backs and centered curves no longer create a fixed right bias.",
+    "Swing speedup makes team swings 35% faster and stronger for six seconds.",
+    "Slow opponents reduces swing speed/strength by 55% and movement by 88%, making distant balls unreachable in time."
+  ]
+}

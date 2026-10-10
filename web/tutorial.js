@@ -47,16 +47,17 @@ function cards() {
   const phone = MOBILE();
   const list = [
     { art: ART.pair, title: 'Your phone is the paddle',
-      body: phone ? '<p>Open <b>poddleball.com</b> on a computer and press Play. Scan the code it shows with this phone. Nothing to install.</p>'
+      body: phone ? '<p>Open <b>pingpong.mehdi.ch</b> on a computer and press Play. Scan the code it shows with this phone. Nothing to install.</p>'
         : '<p>Press Play and pick a court. Scan the code with your phone’s camera, tap <b>Start</b>, and you’re holding the paddle. Nothing to install.</p>',
-      more: 'On a Mac, one AirPod can be the paddle too. Pick AirPod at the top of the set-up screen.' },
+      more: 'Pick 1v1 for two players or 2v2 for four. Share the court link and each player pairs their own phone.' },
     { art: ART.grip, title: 'Grip it, then rip it',
-      body: '<p>Hold the phone like a paddle handle: edge up, screen sideways, top pointing at the screen. Keep still a moment while it calibrates, then swing for real.</p>',
+      body: '<p>Hold the phone like a paddle handle: edge up, screen sideways, top pointing at the screen. Keep still while the first bar fills, then tip its top up and hold until calibration finishes. Swing for real.</p>',
       more: 'It has no strap. Hold on tight and check behind you first.' },
     { title: 'Pick your shot', cls: 'is-shots',
       body: '<ul class="tut-shots">'
         + shot('Drive', 'A normal, solid swing', 'M4 20 Q24 10 44 16')
         + shot('Smash', 'Your hardest swing, level or down through it', 'M6 4 L42 24 M34 24h8v-7')
+        + shot('Spike', 'Chop down through a high ball near the net', 'M6 4 L42 24 M34 24h8v-7')
         + shot('Lob', 'Scoop up under it, high and deep', 'M4 24 Q24 -8 44 24')
         + shot('Dink', 'A soft little scoop into the kitchen', 'M6 22 Q16 6 26 22')
         + shot('Slice', 'Roll your wrist or curve the swing', 'M4 18 Q20 22 30 12 T44 8')
@@ -68,12 +69,15 @@ function cards() {
         + '<li><b>The swirl</b> around a sliced ball turns the way it will kick when it bounces. Spin only bites on that first bounce.</li>'
         + '<li><b>The trail</b> heats up with power: white, yellow, orange, red. Red means smash.</li>'
         + '<li><b>Your phone</b> flashes on every hit, from white for a soft one to red for a smash.</li></ul>' },
-    { art: ART.move, title: 'Move your feet',
-      body: '<p><b>Body:</b> step side to side in front of your webcam and your player follows. Tip the paddle forward to creep up to the net, back to retreat.</p><p><b>Auto:</b> no camera needed. The game runs you to the ball, and all you do is swing.</p>',
-      more: 'Switch between them any time under Settings, Move. The camera only looks for where you stand and nothing is recorded.' },
+    { art: ART.move, title: 'Time your swing',
+      body: '<p>The original Poddle Auto movement runs your player to the ball. Watch it approach, then swing your phone as you would a paddle.</p>',
+      more: 'Match a side ball with a forehand or backhand. Set your paddle hand in Settings. The direction of your swing aims the ball, and pointing left or right adjusts it. A take-back cannot lock shots to one side. Targets stay safely inside the edges.' },
+    { title: 'Build your Critical streak',
+      body: '<p>Land <b>five orange-strength hits in a row</b> to unlock an ultimate. Watch the <b>0/5</b> counter on your phone and game screen.</p><p>At 5/5, choose faster, stronger swings for your team or slower, weaker swings and greatly reduced movement for your opponents. Slowed opponents cannot run to a distant ball in time. The effect lasts six seconds.</p>',
+      more: 'Orange is the second-hardest strength, below red. Weaker or overpowered hits break an unfinished streak. Your ready ultimate stays charged until used.' },
     { art: ART.rules, title: 'Rules, the Poddle way',
       body: '<ul class="tut-facts"><li>First to <b>11</b>, win by 2. Every rally scores.</li><li><b>Serving:</b> the ball waits for your swing. After 9 seconds it serves for you.</li>'
-        + '<li>A rally ends on a double bounce, a ball out, or one that gets past you.</li><li>Volley from anywhere. No kitchen faults here.</li></ul>' },
+        + '<li>Too soft can hit the net; too strong can go long. Left/right travel never causes an out fault.</li><li>Land a shot on the opponent’s side before the baseline and win if they cannot return it before its second bounce.</li><li>In doubles, either teammate can return a reachable ball. Both swinging at it together makes both miss.</li><li>Volley from anywhere. No kitchen faults here.</li></ul>' },
   ];
   if (!phone) list.push({ title: 'Handy keys', cls: 'is-keys',
     body: '<ul class="tut-keys">' + key('Esc', 'Pause against Matt') + key('B', 'Matt’s level. Hold 3 s to restart') + key('V', 'Change the camera') + key('F', 'Full screen')

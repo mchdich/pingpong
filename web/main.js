@@ -1,5 +1,9 @@
-// Glue: AirPod bridge -> MotionModel -> scene + game server.
+// Original Poddle client: phone samples -> original MotionModel -> original scene and game server.
 import { MotionModel, qrot } from './motion.js';
+import { phonePower } from './phonepower.js';
+import { phonePose } from './phonepose.js';
+import { SwingResponse } from './swingresponse.js';
+import { ShotInput } from './shotinput.js';
 import { createScene, shownN, lookFor } from './scene.js';
 import { createPodView } from './podview.js';
 import { createBodyTracker } from './bodytrack.js';
@@ -12,9 +16,9 @@ import * as social from './social.js';          // friends (docs/SOCIAL.md 6, 8)
 const $ = id => document.getElementById(id);
 const qs = new URLSearchParams(location.search);
 const HOST = qs.get('host') || location.hash.slice(1) || 'localhost';      // player 2:  /#<server-ip>
-const BRIDGE = `ws://localhost:${qs.get('bridge') || 8787}`;
+
 const HOSTED = HOST === 'localhost' && !['localhost', '127.0.0.1', ''].includes(location.hostname);      // page came from the game server itself (fly.io)
-const GAME = HOSTED ? `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}` : `ws://${HOST}:${qs.get('game') || 8080}`;
+const GAME = HOSTED || !qs.has('host') && !location.hash && !qs.has('game') ? `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}` : `ws://${HOST}:${qs.get('game') || 8080}`;
 const AUTOBOT = qs.get('autobot') === '1';
 const LOBBY = qs.get('skiptitle') !== '1';                       // ?skiptitle=1 is the legacy path: no lobby, the server seats the socket in room LOCAL at once (docs/ROOMS.md)
 // One id per tab, kept across reloads and reconnects: the server gives a returning tab its seat back instead of seating
@@ -27,12 +31,17 @@ const newPad = () => { PAD = Array.from(crypto.getRandomValues(new Uint8Array(4)
 if (!/^[A-HJ-NP-Z2-9]{4}$/.test(PAD)) newPad();      // 4 characters, shown as P-XXXX so everyone knows it is the paddle's code (NOTES 81). The URL carries the 4 alone
 
 const model = new MotionModel();
+const shotInput = new ShotInput();
+const swingResponse = new SwingResponse();
+function paddlePose(now) {
+  return swingResponse.update(phonePose(model, model.pose(now)), state?.paddles?.[side]?.ultimate?.swingRate ?? 1, now, model.calib);
+}
 const scene = createScene($('stage'));
 const pod = createPodView($('pod'));
 ui.setServerAddress(GAME);
 // A phone can be the paddle wherever the page is served securely (its sensors need https, and it cannot open 'localhost'), so
 // the hosted game needs no helper and no Mac. ?padtest=1 lets the tests pair a fake phone on localhost.
-const CAN_PHONE = HOSTED && location.protocol === 'https:' || qs.get('padtest') === '1';
+const CAN_PHONE = window.isSecureContext || qs.get('padtest') === '1';
 const PHONE_SIZED = navigator.maxTouchPoints > 1 && Math.min(window.screen.width, window.screen.height) < 600;      // window.screen: this file's own screen() (the menu switcher) shadows the bare name, which made this false everywhere until NOTES 149
 // A phone (NOTES 149): touch first and under 600 px on its short side, either way up. It cannot be the screen and the paddle at once, so it gets the phone home
 // (the paddle-code card, watch, stats, the leaderboard, friends) and never takes a seat. A tablet stays the full game: it can be the screen, a phone its paddle.
@@ -40,16 +49,15 @@ const PHONE_SIZED = navigator.maxTouchPoints > 1 && Math.min(window.screen.width
 const MOBILE = LOBBY && (qs.get('mobile') === '1' || qs.get('mobile') !== '0' && matchMedia('(pointer: coarse)').matches && Math.min(window.screen.width, window.screen.height) < 600);
 ui.setMobile(MOBILE);
 const SEATS = new Set(['quick', 'create', 'join', 'tcreate']);      // what a phone never asks for: each would seat it with no paddle
-if (CAN_PHONE && PHONE_SIZED) { $('title-note').textContent = 'Open poddleball.com on a computer to play. This phone becomes your paddle.'; $('title-note').classList.add('is-loud'); }      // the phone is the paddle, not the screen
-else if (!CAN_PHONE && (!/Mac/.test(navigator.platform) || navigator.maxTouchPoints > 1)) { $('title-note').textContent = 'To play, open poddleball.com on a computer, with your phone as the paddle. Here you can watch a match.'; $('title-note').classList.add('is-loud'); }      // no phone paddles here (a local copy), and no helper can run on Windows, a phone, an iPad
+if (PHONE_SIZED) { $('title-note').textContent = 'Open pingpong.mehdi.ch on a computer to play. This phone becomes your paddle.'; $('title-note').classList.add('is-loud'); }
 if (HOSTED) { $('down-lan').hidden = true; $('down-net').hidden = false; }      // online, 'start the server on this Mac' is no help: it is the player's own connection
 // trophies (docs/TROPHIES.md 4): the last `trophies` object a 'profile' message brought (what ui.trophyRow drew, or will draw once the card is up), null = none this visit. trophyParked: one heard before its result card was up
 let lastTrophies = null, trophyParked = null;
-const stats = window.__stats = { get phase() { return phase; }, get role() { return role; }, get room() { return room; }, get tour() { return tour ? { code: tour.code, phase: tour.phase, kind: tourKind, n: (tour.players || []).length, host: !!(tour.you && tour.you.host), out: !!(tour.you && tour.you.out), champ: tour.champ ? tour.champ.name : null } : null; }, get trophies() { return lastTrophies; }, get ranks() { return [...ranks]; }, get cam() { return body ? { ready: body.ready, error: body.error, errorName: body.errorName, seen: body.seen(), fps: Math.round(body.fps), via: body.via } : null; }, get camView() { return phase === 'camera' ? camView : ''; }, hits: 0, myHits: 0, whiffs: 0, swings: 0, errors: 0, paddlePath: 0, calibrated: false, events: {} };
+const stats = window.__stats = { get phase() { return phase; }, get role() { return role; }, get room() { return room; }, get mode() { return matchMode; }, get side() { return side; }, get tour() { return tour ? { code: tour.code, phase: tour.phase, kind: tourKind, n: (tour.players || []).length, host: !!(tour.you && tour.you.host), out: !!(tour.you && tour.you.out), champ: tour.champ ? tour.champ.name : null } : null; }, get trophies() { return lastTrophies; }, get ranks() { return [...ranks]; }, get cam() { return body ? { ready: body.ready, error: body.error, errorName: body.errorName, seen: body.seen(), fps: Math.round(body.fps), via: body.via } : null; }, get camView() { return phase === 'camera' ? camView : ''; }, hits: 0, myHits: 0, whiffs: 0, swings: 0, errors: 0, paddlePath: 0, calibrated: false, events: {} };
 
 let regs = [false, false];                     // a registered username in that seat (docs/ACCOUNTS.md 7.5): the badge beside the name, never text
 let ranks = [null, null];                      // the rank { tier 1..8, div } in that seat, on any court (docs/TROPHIES.md 3, item 9): the emblem beside the name, never text. null = no trophies yet
-let side = 0, role = 'player', names = [null, null], state = null, players = 0, calibrating = true;      // role: 'player' | 'spectator' (docs/SPECTATE.md). names: the server's truth, null = empty seat
+let side = 0, matchMode = '1v1', role = 'player', names = [null, null], state = null, players = 0, calibrating = true;      // role: 'player' | 'spectator' (docs/SPECTATE.md). names: the server's truth, null = empty seat
 // Flow: title -> lobby (pick a room) -> connect (only while there is no AirPod data) -> calibrate -> play. ?skiptitle=1 starts at connect.
 let phase = 'title', lastSample = -1e9, gameEver = false;
 let room = null, wantRoom = LOBBY ? ui.cleanCode(qs.get('court') || qs.get('room')) : '', wantWatch = LOBBY && qs.get('watch') === '1', pending = null, leaveAt = 0;   // room: the court I am seated in (the wire still says 'room'). wantRoom / wantWatch: from a shared link ?court=CODE (?room= is the old spelling and still works) or a reload. pending: the lobby request still waiting for its answer
@@ -66,8 +74,9 @@ const ls = { get(k) { try { return localStorage.getItem(k); } catch { return nul
 const BADGE_OUT = /[\u221a\u2122\u2610-\u2612\u2705\u2713\u2714\u{1f5f8}\u{1f5f9}\u{1f197}][\ufe0e\ufe0f]?/gu;      // text imitations of the registered badge (docs/ACCOUNTS.md 7.3): √ ™ ☐☑☒ ✅ ✓ ✔ 🗸 🗹 🆗 and a selector after one. The badge itself is an element
 const cleanName = t => { const n = [...String(t == null ? '' : t).replace(BADGE_OUT, '').replace(/[\u0000-\u001f\u007f-\u009f\p{Cf}\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u2028-\u202e\u2800\u3164\uffa0\ufff9-\ufffb\u{e0000}-\u{e0fff}<>]/gu, '').replace(/(\p{M}{2})\p{M}+/gu, '$1').replace(/\s+/g, ' ').trim()].slice(0, 12).join('').trim(); return /[\p{L}\p{N}\p{S}\p{P}]/u.test(n) ? n : ''; };      // the server's rule (docs/SPECTATE.md Names); it cleans again anyway
 const myName = () => cleanName(ui.playerName()) || cleanName(ls.get('poddle.name'));      // the lobby field; what was kept last time when the field is not there
-const nameOf = i => names[i] || (state && state.paddles[i] && state.paddles[i].bot ? 'Matt' : i ? 'Player 2' : 'Player 1');
+const nameOf = i => names[i] || (state && state.paddles[i] && state.paddles[i].bot ? 'Matt' : `Player ${i + 1}`);
 const prefs = (() => { try { return JSON.parse(ls.get('poddle.settings')) || {}; } catch { return {}; } })();      // { airpod, stats, reach, sound, sink, sinkName }
+let hand = prefs.hand === 'left' ? 'left' : 'right';
 // body: webcam tracks where you actually stand. auto: server runs you to the ball. (Aim, the wrist's angle moving you, is gone: NOTES 33.)
 const MODES = ['body', 'auto'], MODE_TEXT = { body: 'Body: step side to side, tilt the paddle to move forward or back', auto: 'Auto: the game moves you to the ball, you swing' }, MODE_NAME = { body: 'Body', auto: 'Auto' };
 let bodyZ = 6.5, walkV = 0, walkHold = 0, bodyY = 1.0, vX = 0, vY = 0, lastFrame = performance.now();
@@ -77,7 +86,7 @@ function damp(cur, target, vel, smooth, dt) { const o = 2 / smooth, x = o * dt, 
 // Never asked for out of nowhere: the first seat shows the primer screen (why, what stays private, what the browser will ask), and
 // only its Allow button (a click, so the browser's question follows a gesture) makes the request. The answer is kept under its OWN
 // key: savePrefs rebuilds poddle.settings from a fixed list and would drop it. 'allow' | 'skip' (Play without camera: Auto, never asked again).
-const CAM_KEY = 'poddle.camPrimer', NO_CAM = qs.get('cam') === '0';
+const CAM_KEY = 'poddle.camPrimer', NO_CAM = true; // Phone-only fork uses the original Auto footwork, with no webcam.
 let camPerm = '', permKnown = false;      // the browser's own answer: 'granted' | 'denied' | 'prompt'; '' where it will not say (Firefox and older Safari throw on 'camera')
 const permReady = (async () => { try { const st = await Promise.race([navigator.permissions.query({ name: 'camera' }), new Promise((_, no) => setTimeout(no, 800))]); camPerm = st.state; st.onchange = () => { camPerm = st.state; camPermChanged(); }; } catch { /* no answer: the primer asks as if 'prompt' */ } permKnown = true; })();
 const UA = navigator.userAgent, IOS = /iPad|iPhone/.test(UA) || (/Mac/.test(navigator.platform) && navigator.maxTouchPoints > 1);      // iPadOS says 'MacIntel': it has no System Settings > Privacy or Safari menu bar, its fix is in the Settings app
@@ -88,7 +97,7 @@ const camKind = t => { const n = t && t.errorName || 'NotAllowedError', m = t &&
   if (['NotFoundError', 'OverconstrainedError', 'DevicesNotFoundError'].includes(n)) return 'nocam';
   if (['NotReadableError', 'TrackStartError', 'AbortError'].includes(n)) return 'busy';
   return 'other'; };
-let mode = MODES.includes(qs.get('move')) ? qs.get('move') : NO_CAM || ls.get(CAM_KEY) === 'skip' ? 'auto' : 'body', body = null, bodyX = 0;      // ?cam=0, or Play without camera: there will be no camera, so not Body
+let mode = 'auto', body = null, bodyX = 0;      // ?cam=0, or Play without camera: there will be no camera, so not Body
 let camOn = false, camGen = 0, camWant = false, camAsked = false, camView = '', camAgain = false;      // camGen: the request that counts (Try again and No start a new one; an older answer is let go). camWant: switch to Body once it is up. camAsked: the player pressed something for it (a failure is worth telling)
 function startCam(keep) {                          // the webcam is asked for when a seat is taken, never on the way to watching (docs/SPECTATE.md: spectators get no camera prompt). keep: the centre to resume with (NOTES 190)
   if (camOn || NO_CAM) return; camOn = true; const g = ++camGen;
@@ -144,11 +153,15 @@ function setMode(m, quiet) {                       // chosen in the settings pan
 }
 const usingBody = () => mode === 'body' && body && body.ready;
 const autoNow = () => mode === 'auto' || (mode === 'body' && !(body && body.seen()));   // lost your face: the game runs for you until it's back
-const s = () => (side === 0 ? 1 : -1);
+const team = () => side % 2;
+const seats = () => matchMode === '2v2' ? [0, 1, 2, 3] : [0, 1];
+const other = () => 1 - team();
+const s = () => (team() === 0 ? 1 : -1);
+const teamName = t => seats().filter(i => i % 2 === t).map(i => nameOf(i)).join(' + ');
 
 // ---------- messages ----------
 const say = (text, _color, ms = 1200, cup = false) => ui.toast(text, ms, cup);   // small pill toast
-let rally = 0, unsettled = null;                  // unsettled: my last swing report, while it is still a bet
+let rally = 0, unsettled = null, rejectedStroke = false;                  // unsettled: my last swing report, while it is still a bet
 // This match's stats for the result card (ui.matchResult o.stats). Memory only: nothing is saved or sent. null = not seen from 0-0 (a reconnect,
 // a late spectator, a missed point), and the card shows no stats rather than wrong ones. kind: each side's last shot, counted once with its final kind.
 let ms = null;
@@ -158,25 +171,24 @@ const msCommit = i => { if (ms && ms.kind[i] === 'smash') ms.smash[i]++; if (ms)
 // Seated: the server's name for the seat (what everyone else reads). Not yet: the username, else the typed name. reg: a registered username (the hammer / bow, ui.js regBadge)
 const meName = () => names[side] || profile.username() || myName() || 'You', meReg = () => (names[side] ? regs[side] : !!profile.username());
 const alone = () => ({ them: 'Waiting', themSub: room ? '' : 'Press B to play Matt', meSub: '' });      // the far side of the scoreboard with nobody on it. In a room the bot walks in by itself
-const clearFar = () => { rally = 0; ui.setRally(0); scene.updatePaddle(1 - side, null); if (spec()) scene.updatePaddle(side, null); scene.hideBall(); };      // nobody over there any more: no avatar, no ball, no rally
-const cleanNames = a => [0, 1].map(i => Array.isArray(a) && typeof a[i] === 'string' && a[i] ? a[i].replace(BADGE_OUT, '').slice(0, 24) || null : null);      // untrusted text: ui.js writes it with textContent only
-const cleanRegs = a => [0, 1].map(i => Array.isArray(a) && a[i] === true);      // only a literal true draws a badge (an old server sends none)
-const dressSeats = () => scene.setLooks?.([0, 1].map(i => lookFor(names[i], regs[i])));      // a registered username with its own character (scene.js LOOKS, NOTES 137): whenever names or regs change
+const clearFar = () => { rally = 0; ui.setRally(0); for (const i of [0, 1, 2, 3]) if (spec() || i !== side) scene.updatePaddle(i, null); scene.hideBall(); };      // nobody over there any more: no avatar, no ball, no rally
+const cleanNames = a => [0, 1, 2, 3].map(i => Array.isArray(a) && typeof a[i] === 'string' && a[i] ? a[i].replace(BADGE_OUT, '').slice(0, 24) || null : null);      // untrusted text: ui.js writes it with textContent only
+const cleanRegs = a => [0, 1, 2, 3].map(i => Array.isArray(a) && a[i] === true);      // only a literal true draws a badge (an old server sends none)
+const dressSeats = () => scene.setLooks?.(seats().map(i => lookFor(names[i], regs[i])));      // a registered username with its own character (scene.js LOOKS, NOTES 137): whenever names or regs change
 const rankRef = r => { const o = r && typeof r === 'object' ? r : { tier: r }; return Number.isInteger(o.tier) && o.tier >= 1 && o.tier <= 8 ? { tier: o.tier, div: o.div === 2 ? 2 : o.div === 3 ? 3 : 1 } : null; };      // { tier 1..8 (server/ladder.js TIERS: Master since NOTES 124), div 1..3 } or nothing (a bare tier reads as division I)
-const cleanRanks = a => [0, 1].map(i => Array.isArray(a) ? rankRef(a[i]) : null);      // only a rank draws an emblem (a plain court sends [null, null] or nothing)
+const cleanRanks = a => [0, 1, 2, 3].map(i => Array.isArray(a) ? rankRef(a[i]) : null);      // only a rank draws an emblem (a plain court sends [null, null] or nothing)
 // Who is on the scoreboard. A player reads their own name on the left (NOTES 156) and the other seat on the right; a spectator reads side 0 on the
 // left (blue) and side 1 on the right (orange), names in both. Matt's second line is his level.
 function drawNames() {
-  const pd = state ? state.paddles : [], sub = i => !pd[i] ? '' : pd[i].bot ? botLevel : STATUS_WORD[pd[i].status] || (pd[i].wait ? 'Calibrating' : '');      // the same word as the tag over their character (wait: a server from before 'status')
-  ui.setBot(!spec() && tourKind !== 'match' && pd[1 - side] && pd[1 - side].bot && botLevel ? botLevel : null);      // the 1 2 3 hint and the Difficulty row: only against Matt, and never in a tournament match (he stays at Tour)
-  if (spec()) { ui.setNames({ me: pd[0] || names[0] ? nameOf(0) : 'Waiting', meSub: sub(0), them: pd[1] || names[1] ? nameOf(1) : 'Waiting', themSub: sub(1), reg: [!!pd[0] && regs[0], !!pd[1] && regs[1]], rank: [!!pd[0] && !pd[0].bot ? ranks[0] : null, !!pd[1] && !pd[1].bot ? ranks[1] : null] }); return; }
-  const o = pd[1 - side];
-  if (!o) ui.setNames({ me: meName(), ...alone(), reg: [meReg(), false], rank: [ranks[side], null] });
-  else if (o.bot) ui.setNames({ me: meName(), meSub: '', them: nameOf(1 - side), themSub: botLevel, reg: [meReg(), false], rank: [ranks[side], null] });
-  else ui.setNames({ me: meName(), meSub: side === 0 ? 'Near side' : 'Far side', them: lastOpp = nameOf(1 - side), themSub: sub(1 - side) || (side === 0 ? 'Far side' : 'Near side'), reg: [meReg(), regs[1 - side]], rank: [ranks[side], ranks[1 - side]] });      // 'You' is not a name: no badge on it. The emblem is a rank, not a name: yours shows beside your own name too
+  const pd = state ? state.paddles : [], mine = spec() ? 0 : team(), far = 1 - mine;
+  const occupied = t => seats().some(i => i % 2 === t && (pd[i] || names[i]));
+  const teamStatus = t => seats().filter(i => i % 2 === t && pd[i]).map(i => STATUS_WORD[pd[i].status] || (pd[i].wait ? 'Calibrating' : '')).filter(Boolean).join(' · ');
+  ui.setBot(!spec() && matchMode === '1v1' && pd[far]?.bot && botLevel ? botLevel : null);
+  ui.setNames({ me: occupied(mine) ? teamName(mine) : spec() ? 'Waiting' : meName(), them: occupied(far) ? teamName(far) : 'Waiting', meSub: teamStatus(mine), themSub: teamStatus(far) || (pd[far]?.bot ? botLevel : ''), reg: [matchMode === '1v1' && !!regs[mine], matchMode === '1v1' && !!regs[far]], rank: matchMode === '1v1' ? [ranks[mine], ranks[far]] : [null, null] });
+  if (occupied(far)) lastOpp = teamName(far);
 }
 const STATUS_WORD = { calibrating: 'Calibrating', paused: 'Paused', away: 'Reconnecting' };
-const seatsOn = () => [0, 1].filter(i => (spec() || i !== side) && regs[i] && names[i] && names[i] !== 'Matt').map(i => ({ name: names[i], rank: ranks[i] }));      // On this court (docs/SOCIAL.md 6): the registered SEATS only, never mine, never a spectator (their registration is not on the wire)
+const seatsOn = () => seats().filter(i => (spec() || i !== side) && regs[i] && names[i] && names[i] !== 'Matt').map(i => ({ name: names[i], rank: ranks[i] }));      // On this court (docs/SOCIAL.md 6): the registered SEATS only, never mine, never a spectator (their registration is not on the wire)
 function setPaused(on) { if (on !== pausedUi) ui.setPaused(pausedUi = on); setDim(); }
 
 // ---------- match end, rematch (docs/SPECTATE.md) ----------
@@ -186,22 +198,22 @@ let vicSide = null, vicAt = 0, revealT = 0, champLive = false;      // champLive
 function showOver() {                              // the result card. A matchover that came while a set-up screen was up waits in `over` for the court to open
   const m = over; over = null; if (!m) return;
   const T = m.tour && typeof m.tour === 'object' ? { round: String(m.tour.round || '').slice(0, 24), next: m.tour.next ? String(m.tour.next).slice(0, 24) : null, final: !!m.tour.final, gap: Math.max(0, Math.round((+m.tour.gap || 0) - (performance.now() - overAt) / 1000)) } : null;      // a tournament match: no vote, back to the bracket after gap s
-  const L = spec() ? 0 : side, won = m.winner === L, sc = Array.isArray(m.score) ? m.score : [0, 0], vote = LOBBY && m.type === 'matchover' && !T;      // the left slot: me, or side 0 for a spectator. Legacy room / old server: it restarts by itself
-  ui.setServe(null); ui.hold(null); ui.settings(false);
+  const L = spec() ? 0 : team(), won = m.winner === L, sc = Array.isArray(m.score) ? m.score : [0, 0], vote = LOBBY && m.type === 'matchover' && !T;      // the left slot: me, or side 0 for a spectator. Legacy room / old server: it restarts by itself
+  ui.setServe(null); ui.setTurn?.(null); ui.hold(null); ui.settings(false);
   const rg = Array.isArray(m.reg) ? m.reg.map(x => x === true) : [false, false];      // as it was when it ended, like its names
   const W = m.winner === 1 ? 1 : 0, n = (sc[0] | 0) + (sc[1] | 0);
   const mstats = ms && !m.forfeit && ms.sum === n ? (spec() ? { rally: ms.rally, smashes: ms.smash[0] + ms.smash[1], run: ms.best[W] }      // a spectator: both sides' smashes, the winner's best run
     : { rally: ms.rally, smashes: ms.smash[L], run: ms.best[L] }) : null; ms = null;      // every point seen from 0-0, or none at all (showOver runs once per matchover: it takes `over`)
   const endRanks = Array.isArray(m.rank) ? cleanRanks(m.rank) : ranks;      // the ranks as they were when it ended (docs/TROPHIES.md 3, item 9)
   overForfeit = !!m.forfeit && !spec();      // for the trophy row (drawTrophies): the stayer's win notes the forfeit
-  const wait = +ui.matchResult({ won, me: sc[L] | 0, them: sc[1 - L] | 0, nameMe: spec() ? nameOf(0) : meName(), nameThem: nameOf(1 - L), forfeit: !!m.forfeit, role, vote, tour: T || undefined, reg: [rg[L], rg[1 - L]], rank: [endRanks[L], endRanks[1 - L]], stats: mstats }) || 0;      // ms the panel waits behind VICTORY! (0: it is in at once)
+  const wait = +ui.matchResult({ won, me: sc[L] | 0, them: sc[1 - L] | 0, nameMe: teamName(L), nameThem: teamName(1 - L), forfeit: !!m.forfeit, role, vote, tour: T || undefined, reg: [rg[L], rg[1 - L]], rank: [endRanks[L], endRanks[1 - L]], stats: mstats }) || 0;      // ms the panel waits behind VICTORY! (0: it is in at once)
   vicSide = W; vicAt = performance.now() + wait;
   const reveal = () => { if (ui.currentOverlay() !== 'match') return; if (vote) { const by = +m.rematchBy || 20; ui.rematch({ left: Math.max(0, Math.min(by, Math.round(by + (m.forfeit ? 0 : 2) - (performance.now() - overAt) / 1000))) }); }      // the vote's clock starts with the panel (the server gave the title its 2.6 s on top: STAMP_S)
     if (trophyParked) { const t = trophyParked; trophyParked = null; drawTrophies(t); }      // its trophies came first (the 'profile' message can land before the matchover, behind VICTORY!, or while a set-up screen was up): the row goes on the card as it comes in, so its roll and ceremony are seen
     if (won && !spec() && wait) ui.confetti(['#3aa0ff', '#ffd34a', '#ffffff'], 80); };      // the second burst belongs to the panel
   clearTimeout(revealT); if (wait) revealT = setTimeout(reveal, wait); else reveal();
   scene.jingle(spec() ? (m.forfeit ? 'forfeit' : 'watch') : m.forfeit ? (won ? 'forfeit' : 'lose') : won ? 'win' : 'lose');      // the match point's sound: its chime was skipped (scene.js)
-  if (vote) { if (!spec()) ui.rematch({ mine: null, theirs: null, name: nameOf(1 - L) }); }      // the clock is drawn by reveal(), with the panel
+  if (vote) { if (!spec()) ui.rematch({ mine: null, theirs: null, name: teamName(1 - L) }); }      // the clock is drawn by reveal(), with the panel
   else if (!T) setTimeout(() => { if (ui.currentOverlay() === 'match') ui.showOverlay(null); }, 6000 + wait);        // normally the next 'serve' closes it after 5 s. A tournament match: 'closed round' takes us to the bracket
   if (won && !spec()) { ui.confetti(['#3aa0ff', '#ffd34a', '#3ecf72', '#ffffff'], 120); clearTimeout(burstT); if (!wait) burstT = setTimeout(() => { if (ui.currentOverlay() === 'match') ui.confetti(['#3aa0ff', '#ffd34a', '#ffffff'], 80); }, 900); }      // the second burst belongs to the card (reveal, when it waits): a quick 'No rematch' had it falling over the lobby
   if (spec()) ui.confetti(W ? ['#ff8a3d', '#ffd34a', '#ffffff'] : ['#3aa0ff', '#ffd34a', '#ffffff'], 60);      // a spectator: one smaller burst in the winner's colours
@@ -225,10 +237,10 @@ const lvl = (v, d) => Number.isInteger(v) && v >= 0 && v <= 10 ? v : d;      // 
 let musicVol = lvl(prefs.music, 5), uiVol = lvl(prefs.menuSfx, 6);
 let soundOn = prefs.sound !== false, sinkId = typeof prefs.sink === 'string' ? prefs.sink : '', sinks = [], sinkDenied = false;
 // sound / sink are left out while they are the default, so a player who never opens the Sound rows keeps the same saved object as before
-const savePrefs = () => ls.set('poddle.settings', JSON.stringify({ airpod: showPod, stats: showStats, reach: body ? body.reach : prefs.reach, sound: soundOn ? undefined : false, body: showBody ? undefined : false, cam: showCam ? undefined : false, sink: sinkId || undefined, music: musicVol === 5 ? undefined : musicVol, menuSfx: uiVol === 6 ? undefined : uiVol }));
+const savePrefs = () => ls.set('poddle.settings', JSON.stringify({ hand, airpod: showPod, stats: showStats, reach: body ? body.reach : prefs.reach, sound: soundOn ? undefined : false, body: showBody ? undefined : false, cam: showCam ? undefined : false, sink: sinkId || undefined, music: musicVol === 5 ? undefined : musicVol, menuSfx: uiVol === 6 ? undefined : uiVol }));
 const reachNow = () => body ? body.reach : Number.isFinite(prefs.reach) ? prefs.reach : 0.3;
 const sensOf = () => { const r = reachNow(); return { sens: Math.round((0.42 - r) / 0.03) + 1, sensMin: r > 0.419, sensMax: r < 0.081 }; };      // 1 = least sensitive. Range is Body's: how far you step to reach the sideline
-function syncSettings() { ui.setSettings({ ...sensOf(), airpod: showPod, body: showBody, cam: showCam, stats: showStats, inRoom: LOBBY && !!room, spectator: spec(), bodyOk: !NO_CAM, bodyNote: NO_CAM || (body ? body.ready : camOn) ? '' : 'Body turns the camera on', tourMatch: tourKind === 'match',      // bodyOk: Body can be picked wherever a camera can be asked for
+function syncSettings() { ui.setSettings({ ...sensOf(), hand, airpod: showPod, body: showBody, cam: showCam, stats: showStats, inRoom: LOBBY && !!room, spectator: spec(), bodyOk: !NO_CAM, bodyNote: NO_CAM || (body ? body.ready : camOn) ? '' : 'Body turns the camera on', tourMatch: tourKind === 'match',      // bodyOk: Body can be picked wherever a camera can be asked for
   sound: soundOn, music: musicVol, uisfx: uiVol, sink: sinkId, sinks: [{ id: '', label: 'System default' }, ...sinks],
   sinkWhy: !scene.audio.canSwitch() ? 'browser' : sinks.length ? '' : sinkDenied ? 'denied' : 'devices' }); }
 function sens(dir, quiet) {                        // ] / + = more sensitive, [ / - = less. The panel shows the number, the keys say it
@@ -273,7 +285,8 @@ function setPod(on) { showPod = !!on; show('podwrap', showPod); savePrefs(); syn
 function setCamView(on) { showCam = !!on; ui.setCamView?.(showCam); savePrefs(); syncSettings(); }      // the inset only: Body (tracking) is its own switch
 function setBody(on) { showBody = !!on; scene.setSelfBody(showBody); savePrefs(); syncSettings(); }
 function setStats(on) { showStats = !!on; show('dev', showStats); savePrefs(); syncSettings(); }
-function recenter() { model.recenter(); if (body) body.center(); say('Camera recentered'); }
+function recenter() { model.recenter(); shotInput.reset(); swingResponse.reset(); say('Paddle recentered'); }
+function setHand(value) { if (!['right', 'left'].includes(value)) return; hand = value; shotInput.reset(); savePrefs(); syncSettings(); }
 function leave() { if (!LOBBY || !room) return; game.send({ type: 'leave' }); toLobby(); }
 // The socket opens again so the server hears who this is now (docs/ACCOUNTS.md 6.2, 9.7): signed in or out, storage cleared, data
 // deleted. It keeps the device of a socket's first hello and reads the cookie at the upgrade, so a new socket is the only way. Never
@@ -286,7 +299,7 @@ function redialDue() { if (redialWait) { redialWait = false; game.drop(); } }   
 function openStats() { if (room) { say('Leave the court to see your stats', null, 2400); return; } ui.settings(false); if (phase === 'title') play(); if (phase === 'lobby') ui.lobbyView('profile'); }      // Settings > You > Your stats
 function playBot(level) { if (pending) return; botWant = [0, 1, 2, 3].includes(level) ? level : 1; request({ type: 'create', public: false }); }      // Play a bot = a private room, then 'bot' right after the welcome. No protocol of its own
 // Opening the panel pauses a match against Matt (or an empty court); against a human it is only a card over a live rally.
-const vsHuman = () => { const o = state && state.paddles[1 - side]; return !!o && !o.bot; };
+const vsHuman = () => !!state && state.paddles.some((p, i) => i % 2 !== team() && p && !p.bot);
 const forfeits = () => LOBBY && !spec() && ui.currentOverlay() !== 'match' && (tourKind === 'match' || vsHuman() && !holding && (struck || !!state && state.score[0] + state.score[1] > 0));      // a tournament match: leaving is a forfeit from the first moment, against Matt too      // leaving now is a forfeit (docs/SPECTATE.md): the Leave button and the Q toast say so. struck: a ball has been hit in this match
 function pause(on) {
   if (spec() || !seated() || !live()) return;
@@ -330,12 +343,12 @@ function resetPeaks() { peaks = []; log10 = []; sessionPeak = 0; ui.setStat('sw'
 // ---------- screens: title -> connect -> calibrate -> play ----------
 function showCal(e) { if (phase === 'calibrate') ui.calibration(e, { camLost: !!(body && body.ready && !body.seen()) }); }
 function screen(name) { ui.showScreen(name); scene.setMenu(!!name); route(); mau.music(!MOBILE && (name === 'title' || name === 'lobby')); if (name !== 'lobby') profile.chipStop?.(); }      // off the lobby: a trophy flight to the corner card lands at once (NOTES 203)      // the music is the title's and the lobby's: it fades out on the way to a court      // a menu screen over the court = the menu camera and the cheap render mode (docs/API-NEXT.md 2.4)
-function openCourt() { screen(null); if (over) showOver(); padPhase(); }
+function openCourt() { screen(null); if (over) showOver(); padPhase(); syncUltimate(); }
 // A calibration is kept (NOTES 187): localStorage poddle.cal = { phone: {...}, airpod: {...} } (web/motion.js save / restore), one per kind of paddle, written when a
 // calibration finishes. From then on a seat opens straight onto the court, the paddle re-aimed at the screen from its first sample; a toast says C recalibrates. C,
 // a swap of paddle and the set-up screens are as before. Nothing is sent: it stays in this browser (privacy section 5).
 const CAL_KEY = 'poddle.cal', calStore = () => { try { const o = JSON.parse(ls.get(CAL_KEY)); return o && typeof o === 'object' ? o : {}; } catch { return {}; } };
-const padWord = () => (src === 'phone' ? 'phone' : 'AirPod');
+const padWord = () => 'phone';
 const sayRecal = () => setTimeout(() => { if (inPlay()) say(`C to recalibrate ${padWord()}`, null, 3200); }, 1400);      // after the court's first words (Matt's level, 'Your serve' comes later still)
 function keepCal() { if (!src) return; const d = model.save(); if (!d) return; const o = calStore(); o[src] = { ...d, at: Date.now() }; ls.set(CAL_KEY, JSON.stringify(o)); }
 function cachedCal() {                             // -> true: the kept calibration for this paddle is in the model, the seat is on the court
@@ -343,13 +356,13 @@ function cachedCal() {                             // -> true: the kept calibrat
   if (undo) { undo = null; ui.backLabel('Back'); } calibrating = false; stats.calibrated = true; phase = 'play'; if (body) body.center(); openCourt(); tellCal();
   sayRecal(); return true;
 }
-function startCal() { if (undo) undo.kept = false; calibrating = true; stats.calibrated = false; model.startCalibration(); phase = 'calibrate'; ui.calibrationReset(); screen('calibrate'); tellCal(); padPhase(); }
+function startCal() { if (undo) undo.kept = false; calibrating = true; stats.calibrated = false; model.startCalibration(); shotInput.reset(); swingResponse.reset(); phase = 'calibrate'; ui.calibrationReset(); screen('calibrate'); tellCal(); padPhase(); syncUltimate(); }
 // The server is told whether this seat is ON THE COURT, from what the player is looking at, never from the calibration flags: a calibration is kept
 // between courts, so 'calibrated' was true behind the share screen, the camera primer, the connect screen (the phone asleep) and the 'All set' card,
 // paddles went out from all of them, and the match was counted in and served to a player who then calibrated through it (NOTES 170).
 let toldCal = null, welcomed = false;      // toldCal: what this seat last said, null = nothing yet. welcomed: the seat's 'welcome' is in (nothing before it: profile's hello goes first, docs/ACCOUNTS.md 3.1)
 const onCourt = () => phase === 'play' && !ui.currentScreen();
-function tellCal() { if (!seated() || spec() || !welcomed) { toldCal = null; return; } const cal = !onCourt(); if (cal !== toldCal) { toldCal = cal; game.send({ type: 'status', cal }); } }      // the others see 'Calibrating' on my character, and the next serve waits for me (docs/NEXT.md 14a)
+function tellCal() { if (!seated() || spec() || !welcomed) { toldCal = null; return; } const cal = !onCourt() || !airpodLive(); if (cal !== toldCal) { toldCal = cal; game.send({ type: 'status', cal }); } }
 function play() {                                  // leave the title for the lobby. A shared link (?room=CODE) joins at once, or watches (&watch=1).
   if (phase !== 'title') return;
   uiSfx('select');                                 // a click anywhere or any key: the press that starts it all gets the select sound (the button itself never sees the click: the lobby is up by then)
@@ -384,7 +397,7 @@ function setUrl(code, watch) { const u = new URL(location.href), q = u.searchPar
 const shareLink = code => ['localhost', '127.0.0.1', ''].includes(location.hostname) ? '' : `${location.origin}/?court=${code}`;      // the root, never the menu path the address bar happens to show      // a localhost link is no use to a friend
 // ---------- asking to play (docs/SPECTATE.md Asking to play) ----------
 let askId = 0, askWho = '', askedFor = false, noBot = false;
-const CAN_PADDLE = CAN_PHONE || /Mac/.test(navigator.platform) && navigator.maxTouchPoints <= 1;      // this device can be a paddle (the inverse of the viewer-only note at the top): only then is there an Ask to play
+const CAN_PADDLE = CAN_PHONE;      // this device can be a paddle (the inverse of the viewer-only note at the top): only then is there an Ask to play
 function askSync() { const pd = state && state.paddles || [], bots = pd.filter(p => p && p.bot).length, hum = pd.filter(p => p && !p.bot).length;      // a spectator, one human playing Matt
   ui.showAsk(LOBBY && spec() && phase === 'watch' && CAN_PADDLE && !MOBILE && bots === 1 && hum === 1); }
 function answer(yes) { if (!askId) return; game.send({ type: 'answer', id: askId, yes }); ui.askCard(null); }
@@ -465,7 +478,7 @@ function toLobby(msg) {                            // out of a room, back to the
   trophiesOff(); clearFar(); clearTimeout(burstT); clearTimeout(revealT); vicSide = null; ui.confettiOff(); ms = null; room = null; welcomed = false; role = 'player'; side = 0; names = [null, null]; regs = [false, false]; ranks = [null, null]; dressSeats(); wantRoom = ''; wantWatch = false; state = null; over = null; botWant = null; botLevel = ''; holding = frozen = votedNo = struck = false; watchers = 0; phase = 'lobby'; setUrl(null); settle();
   ui.setSpectator(false); ui.emotesOff(); ui.notesOff(); ui.hold(null); ui.askCard(null); ui.askPlay(null); ui.showAsk(false); askedFor = noBot = false; setPaused(false); ui.settings(false); ui.setWatchers(0); syncSettings(); ui.setSettings({ canPause: true }); social.court([]);
   scene.setFrozen(false); scene.setSide(0); scene.startAttract();
-  ui.setRoom(null); ui.showOverlay(null); screen('lobby'); ui.lobbyView('home'); profile.landed?.();      // the trophies the games earned fly into the corner card as the home comes in (NOTES 203)
+  ui.setRoom(null); ui.showOverlay(null); screen('lobby'); ui.lobbyView('home'); profile.landed?.(); syncUltimate();      // the trophies the games earned fly into the corner card as the home comes in (NOTES 203)
   ui.setScore(0, 0); ui.setServe(null); ui.setNames({ me: meName(), ...alone(), reg: [meReg(), false] });
   if (msg) say(msg, null, 2600); else ui.toastOff();                                // 'Press Q again to leave' has been answered
   tourKind = null; tourMoving = false; ui.tourCourt(null); syncSettings();
@@ -493,7 +506,7 @@ scene.setSelfBody(showBody); show('podwrap', showPod); ui.setCamView?.(showCam);
 if (LOBBY && qs.get('room')) setUrl(wantRoom.length === 4 ? wantRoom : null, wantWatch);      // an old ?room= link: same court, the address bar now says ?court=
 if (!LOBBY) { phase = 'connect'; screen('connect'); setTimeout(begin); } else { ui.titleRoom(wantRoom.length === 4 ? wantRoom : '', wantWatch); screen('title'); scene.startAttract(); }
 // The tab reads just Poddle (NOTES 96) from the first touch or key on; until then the <title> says what the game is, for the crawler that renders this page and never touches it (NOTES 218)
-for (const ev of ['pointerdown', 'keydown', 'touchstart']) addEventListener(ev, () => { document.title = 'Poddle'; }, { once: true, capture: true, passive: true });      // the menu's own endless rally, client-side only (docs/NEXT.md 11)
+for (const ev of ['pointerdown', 'keydown', 'touchstart']) addEventListener(ev, () => { document.title = 'Ping Pong'; }, { once: true, capture: true, passive: true });      // the menu's own endless rally, client-side only (docs/NEXT.md 11)
 refreshStatus(); setInterval(refreshStatus, 250);
 
 // ---------- sockets (auto-reconnect) ----------
@@ -502,8 +515,8 @@ refreshStatus(); setInterval(refreshStatus, 250);
 // What a reconnect says about the court it was in. If the server restarted meanwhile (every deploy does), the court is gone
 // from its memory; with this the first tab back rebuilds it under the same code, same seats, same score (server: revive()).
 let roomPub = false, restartUntil = 0;
-function backTo() { const o = state && state.paddles && state.paddles[1 - side], lv = o && o.bot ? ['Rookie', 'Club', 'Pro', 'Tour'].indexOf(botLevel) : -1, sc = state && Array.isArray(state.score) ? state.score : null;
-  return '&back=1&pub=' + (roomPub ? 1 : 0) + (spec() ? '' : '&side=' + side) + (sc ? '&score=' + (sc[0] | 0) + '-' + (sc[1] | 0) : '') + (lv >= 0 ? '&bot=' + lv : ''); }
+function backTo() { const o = state && state.paddles && state.paddles[other()], lv = o && o.bot ? ['Rookie', 'Club', 'Pro', 'Tour'].indexOf(botLevel) : -1, sc = state && Array.isArray(state.score) ? state.score : null;
+  return '&back=1&mode=' + matchMode + '&pub=' + (roomPub ? 1 : 0) + (spec() ? '' : '&side=' + side) + (sc ? '&score=' + (sc[0] | 0) + '-' + (sc[1] | 0) : '') + (lv >= 0 ? '&bot=' + lv : ''); }
 function connect(urls, el, onmsg, onopen) {
   urls = [].concat(urls); let ws, delay = 400, i = 0, fails = 0;
   const open = () => {
@@ -524,59 +537,51 @@ function connect(urls, el, onmsg, onopen) {
   return { send: m => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(m)); }, drop: () => { if (ws && ws.readyState === 1) ws.close(); } };      // drop: open again at once, with the address as it is now
 }
 
-// ---------- the paddle: an AirPod (the helper on this Mac) or a phone (its page, by way of the game server) ----------
-// Hosted, the helper's socket is only opened for someone who has played with an AirPod here before or asks to: a page
-// reaching for localhost makes Chrome ask a first-time visitor about 'devices on your local network' for nothing.
-// A phone weighs forty AirPods and nobody whips it round at 30 rad/s, so its swings count for more (?padgain= to try another value):
-// motion.js scales the phone's rotation rate by it for the effortless part of the score only (RATE_GAIN), and its speed part by the gain's square root, so a relaxed phone
-// stroke is a drive sooner but a smash still takes a hard swing (~19 rad/s, an AirPod ~23.4) (NOTES 82). pw() now scales only 'raw', which a serve reads.
-const PHONE_GAIN = Math.max(0.5, Math.min(3, +qs.get('padgain') || 1.5)), pw = v => src === 'phone' ? v * PHONE_GAIN : v;
-const AIRPOD_BUFFER = model.c.BUFFER_MAX, PHONE_BUFFER = 0.2;
-let padOn = false, src = '', lastT = -1e9, bridge = null, useAirpod = !CAN_PHONE || qs.has('bridge') && qs.get('padtest') !== '1' || ls.get('poddle.airpod') === '1';
-// Someone who played here before phones could be paddles (a name is saved, no choice yet) may have the helper running: it is
-// tried quietly behind the phone's QR, and the first AirPod sample makes the AirPod the paddle, with no click and no change for them.
-let tryBridge = !useAirpod && CAN_PHONE && ls.get('poddle.airpod') == null && !!ls.get('poddle.name');
-let chose = false, undo = null;      // undo: a swap made mid-game, until the new paddle is calibrated. Cancel (the Back button) puts the old one back      // the player picked the paddle on the switch this visit: a phone page left open no longer takes over from the AirPod
-function openBridge() { if (!bridge) bridge = connect(BRIDGE, 'm', sample => onSample(sample, 'airpod')); }
-let myKind = null, myBet = null;      // my last hit's kind (a re-aim names it only when it changed) and its bet-fallback timer
-const padFx = (fx, n, b) => { if (padOn && !useAirpod) game.send({ type: 'padfx', fx, n, b }); };      // the phone buzzes on my hits and says which step we are at
-const padPhase = () => padFx(phase === 'calibrate' || phase === 'camera' ? 'cal' : phase === 'play' ? 'play' : 'idle');      // camera: the primer is up, the phone says 'Follow the steps on your computer'
-function showPair() {                              // the set-up screen offers the phone first wherever a phone can be the paddle
-  const phone = CAN_PHONE && !useAirpod, kind = phone ? 'phone' : 'airpod';      // the words and drawings follow the choice (a phone that scans in makes it the choice)
-  ui.setPaddle(kind); pod.setKind(kind);
-  ui.padPair({ show: phone && !padOn, url: `${location.origin}/pad.html?k=${PAD}`, code: 'P-' + PAD, title: phone ? 'Connect your phone' : 'Connect your AirPod', choose: CAN_PHONE, mode: kind,
-    foot: phone ? 'Nothing to install.' : 'Still waiting? Open Poddle Helper on this Mac.' });
-  ui.setSettings({ paddle: CAN_PHONE ? kind : null });
+// ---------- phone paddle: original Poddle gain, buffering, and staged MotionModel calibration ----------
+const PHONE_GAIN = Math.max(0.5, Math.min(3, +qs.get('padgain') || 1.5)), pw = v => v * PHONE_GAIN;
+const PHONE_BUFFER = 0.2;
+let padOn = false, src = '', lastT = -1e9, undo = null;
+let myKind = null, myBet = null;
+let ultimateInputUntil = 0, ultimateRelay = '';
+function ultimateInfo() {
+  const available = !!state?.ultimates;
+  const need = Math.max(1, Math.round(Number.isFinite(state?.ultimates?.need) ? state.ultimates.need : 5));
+  const charge = Math.max(0, Math.min(need, state?.ultimates?.charges?.[side] | 0));
+  const own = state?.paddles?.[side]?.ultimate || {};
+  const enabled = available && phase === 'play' && seated() && !spec() && !calibrating && !frozen && !holding && !over && !ui.currentOverlay() && !ui.currentScreen() && performance.now() >= ultimateInputUntil;
+  return { type: 'ultimateState', available, charge, need, boost: Math.max(0, Math.ceil(own.boost || 0)), slow: Math.max(0, Math.ceil(own.slow || 0)), enabled };
 }
-// Phone <-> AirPod: the set-up screen's switch, or the settings row at any time. Mid-game what was calibrated was the other
-// paddle, so it is back to the set-up screen (the QR, or the helper card) until the new one answers, then calibration.
-// Going to the AirPod, the phone's page is told to stand down first (padFx says nothing once the AirPod is the paddle).
-function pickPaddle(kind) {
-  const want = kind === 'airpod'; if (want === useAirpod) return; if (undo && undo.airpod === want) return cancelSwap();      // the switch back to where it was = Cancel
-  const mid = phase === 'play' || phase === 'calibrate';
-  if (phase === 'play' && !undo) { undo = { airpod: useAirpod, kept: stats.calibrated }; ui.backLabel('Cancel'); }
-  setPaddleTo(want);
-  if (mid) { stats.calibrated = false; calibrating = true; lastSample = -1e9; phase = 'connect'; ui.settings(false); screen('connect'); tellCal(); }
+function syncUltimate() {
+  const info = ultimateInfo();
+  ui.setUltimate({ ...info, visible: info.available && phase === 'play' && seated() && !spec() && !over });
+  const key = JSON.stringify(info);
+  if (padOn && key !== ultimateRelay) { ultimateRelay = key; game.send(info); }
 }
-function setPaddleTo(want) { if (want) padFx('idle'); useAirpod = want; chose = true; tryBridge = false; if (useAirpod) openBridge(); ls.set('poddle.airpod', useAirpod ? '1' : '0'); showPair(); if (!useAirpod) padPhase(); }
-// Cancel: the old paddle again. If the new one never started calibrating, the old calibration is untouched: straight back to the court.
-function cancelSwap() {
-  const u = undo; undo = null; ui.backLabel('Back'); if (!u) return; setPaddleTo(u.airpod); lastSample = performance.now();      // the old paddle was live a moment ago: no 'signal lost' flash while its next sample arrives
-  if (u.kept) { stats.calibrated = true; calibrating = false; phase = 'play'; openCourt(); tellCal(); }
-  else { stats.calibrated = false; phase = 'connect'; screen('connect'); }      // its next sample calibrates it again
+function activateUltimate(kind = 'boost') {
+  const info = ultimateInfo();
+  if (!['boost', 'slow'].includes(kind) || !info.enabled || info.charge < info.need) return false;
+  ultimateInputUntil = performance.now() + 650;
+  game.send({ type: 'ultimate', kind }); syncUltimate();
+  setTimeout(syncUltimate, 670);
+  return true;
 }
-ui.onPaddleSwap(pickPaddle);
-if (useAirpod || tryBridge) openBridge();
+const padFx = (fx, n, b) => { if (padOn) game.send({ type: 'padfx', fx, n, b }); };
+const padPhase = () => padFx(phase === 'calibrate' ? 'cal' : phase === 'play' ? 'play' : 'idle');
+function showPair() {
+  ui.setPaddle('phone'); pod.setKind('phone');
+  ui.padPair({ show: !padOn, url: `${location.origin}/pad.html?k=${PAD}`, code: 'P-' + PAD, title: 'Connect your phone', choose: false, mode: 'phone', foot: 'iPhone or Android. Nothing to install.' });
+  ui.setSettings({ paddle: null });
+}
+function pickPaddle() { showPair(); }
+function cancelSwap() { undo = null; }
 showPair();
-if (CAN_PHONE && !useAirpod && !PHONE_SIZED) $('title-note').textContent = 'Nothing to install. Your phone is the paddle.';
+if (!PHONE_SIZED) $('title-note').textContent = 'Nothing to install. Your phone is the paddle.';
 function onSample(sample, from) {
-  if (from === 'airpod' && !useAirpod && (padOn || !tryBridge)) return;      // a phone was scanned in (or chosen): it is the paddle, the AirPod in a pocket is not
-  if (from === 'airpod' && !useAirpod) { useAirpod = true; tryBridge = false; }      // a returning AirPod player's helper answered
-  if (from === 'phone' && useAirpod) { if (chose || !CAN_PHONE) return; useAirpod = false; }      // a phone page that is still open took over: it is the paddle now, say so. Unless the AirPod was picked on purpose
+  if (from !== 'phone') return;
   if (!sample || !Array.isArray(sample.r)) return;
   // A phone's samples cross the internet, and phone wifi holds packets back and lets them go in bursts: its replay may wait
   // longer when (only when) that happens (NOTES 35). The AirPod keeps its own limit.
-  if (from !== src) { src = from; lastT = -1e9; model.c.BUFFER_MAX = from === 'phone' ? PHONE_BUFFER : AIRPOD_BUFFER; model.c.RATE_GAIN = from === 'phone' ? PHONE_GAIN : 1; if (from === 'airpod') ls.set('poddle.airpod', '1'); showPair();      // the paddle changed hands: what was calibrated was the other one
+  if (from !== src) { src = from; lastT = -1e9; model.c.BUFFER_MAX = PHONE_BUFFER; model.c.RATE_GAIN = PHONE_GAIN; showPair();      // the paddle changed hands: what was calibrated was the other one
     if (stats.calibrated) { stats.calibrated = false; if (phase === 'play' && !cachedCal()) startCal(); } else if (phase === 'calibrate' && !cachedCal()) startCal(); }      // the other paddle's kept calibration, if it has one
   if (sample.t < lastT - 0.5 && (stats.calibrated || phase === 'calibrate')) { stats.calibrated = false; if ((phase === 'play' || phase === 'calibrate') && !cachedCal()) startCal(); }      // the paddle's clock went back: the phone's page was reloaded, and its compass starts from a new zero (a kept calibration re-aims itself)
   lastT = sample.t;
@@ -586,13 +591,19 @@ function onSample(sample, from) {
   if (phase === 'title') { if (power > 12) play(); return; }         // a swing presses Play. The model is not fed until calibration
   if (phase === 'lobby' || phase === 'watch' || phase === 'camera') return;      //  A spectator's AirPod is nobody's paddle. Behind the primer it only counts as live (airpodLive): its answer goes on to calibration
   if (phase === 'connect' && !cachedCal()) startCal();              //  begins, so a bud lying on the desk cannot calibrate itself. Kept from before: the court (cachedCal)
+  shotInput.observe(model, sample);
   for (const e of model.feed(sample, performance.now())) {
     if (e.type === 'cal') showCal(e);
     else if (e.type === 'calibrated') { if (undo) { undo = null; ui.backLabel('Back'); } calibrating = false; stats.calibrated = true; phase = 'play'; if (body) body.center(); tellCal(); keepCal();
       // 'All set' arrives in this same batch: hold the green card long enough to be read, then open the court
       setTimeout(() => { if (phase !== 'play') return; openCourt();
         setTimeout(() => { if (inPlay() && state && state.serving === side) say('Your serve', null, 2600); }, 380); }, 900); }     // after the fade
-    else if (e.type === 'swing' || e.type === 'swingFix') { const fix = e.type === 'swingFix'; if (!fix) stats.swings++;     // swings are reported early; a fix follows if the real peak differs
+    else if (e.type === 'swing' || e.type === 'swingFix') { const fix = e.type === 'swingFix', power = phonePower(e), shot = shotInput.report(e, hand, model); if (!fix) {
+      stats.swings++;
+      rejectedStroke = !!(state?.live && state.serving == null && state.v?.[2] * s() > 0 && scene.canReturn?.(side) === false);
+      if (rejectedStroke) unsettled = null;
+    }
+      if (rejectedStroke) continue;     // a new stroke cannot claim a ball already visibly behind the paddle; accepted fixes still pass
       if (!calibrating && !spec() && seated() && !frozen && !holding) {      // a paused or held room takes no swings
         // Spin is DELIBERATE: intent x speed. Intent is a wrist roll through the ball clearly past what a plain stroke does
         // (|roll| is the stroke's share of rotation about the forward axis: ordinary strokes 0-0.46, a real slice 0.50-0.62), a soft
@@ -620,24 +631,26 @@ function onSample(sample, from) {
         // (0.5-0.7 at the bet), not a wrist. The settled report keeps the roll alone.
         const fade = r => { const k = Math.max(0, Math.min(1, (r - 0.45) / 0.3)); return 1 - k * k * (3 - 2 * k); }, rl = Math.abs(e.roll || 0);
         const g = 1 - fade(e.final === false && e.pend && e.twist != null ? Math.min(rl, Math.abs(e.twist)) : rl), lob = e.lob * (1 - g);
-        game.send({ type: 'swing', power: e.power, raw: pw(e.raw || 0), rom: e.rom || 0, back: e.back || 0, off: e.off || 0, dir: e.dir, lob, chop: e.chop, age: e.age, net: net.lag(), slice, fix, final: !!e.final, pk: e.raw || 0, src: src === 'phone' ? 'phone' : 'airpod' });      // pk, src: stats only (docs/ACCOUNTS.md 4.5), the UNGAINED peak rad/s (motion.js sw.peak) and which paddle made it. final: the settled power. The first report is a bet that overshoots (a wind-up called 30 settles at 8): the server serves and calls a smash only on a settled one
-        unsettled = e.final ? null : { power: e.power, raw: pw(e.raw || 0), rom: e.rom || 0, back: e.back || 0, off: e.off || 0, dir: e.dir, lob: (e.lobRaw != null ? e.lobRaw : e.lob) * fade(rl), chop: e.chop, age: e.age, slice, pk: e.raw || 0, src: src === 'phone' ? 'phone' : 'airpod' };   // standing in for a settled report, the lob is the path as it was, not the look-ahead
+        game.send({ type: 'swing', ...shot, power, raw: pw(e.raw || 0), rom: e.rom || 0, back: e.back || 0, off: e.off || 0, dir: e.dir, lob, chop: e.chop, age: e.age, net: net.lag(), slice, fix, final: !!e.final, pk: e.raw || 0, src: src === 'phone' ? 'phone' : 'airpod' });      // raw retains the original serve-intent gain; strength uses the ungained measured peak exactly once
+        unsettled = e.final ? null : { ...shot, power, raw: pw(e.raw || 0), rom: e.rom || 0, back: e.back || 0, off: e.off || 0, dir: e.dir, lob: (e.lobRaw != null ? e.lobRaw : e.lob) * fade(rl), chop: e.chop, age: e.age, slice, pk: e.raw || 0, src: src === 'phone' ? 'phone' : 'airpod' };   // standing in for a settled report, the lob is the path as it was, not the look-ahead
         if (!fix) scene.onEvent({ type: 'swung', side });            // whoosh now; the server's echo is de-duplicated
       } }
-    else if (e.type === 'swingEnd') { logSwing(e);
-      if (unsettled) { game.send({ type: 'swing', ...unsettled, power: e.peak, pk: e.raw || unsettled.pk, net: net.lag(), fix: true, final: true }); unsettled = null; } }      // motion.js settles every swing itself; should one ever end without, the server still hears that it is over
+    else if (e.type === 'swingEnd') { const power = phonePower(e), shot = shotInput.report(e, hand, model); logSwing({ ...e, peak: power });
+      if (rejectedStroke) { rejectedStroke = false; unsettled = null; continue; }
+      if (unsettled) { game.send({ type: 'swing', ...unsettled, ...shot, power, raw: pw(e.raw || 0), rom: e.rom || 0, pk: e.raw || unsettled.pk, net: net.lag(), fix: true, final: true }); unsettled = null; } }      // motion.js settles every swing itself; should one ever end without, the server still hears the same measured strength
   }
 }
 
-const SCENE_EVENTS = ['serve', 'hit', 'swung', 'bounce', 'launch', 'whiff', 'point'];
+const SCENE_EVENTS = ['serve', 'hit', 'swung', 'bounce', 'launch', 'net', 'whiff', 'point', 'ultimate'];
 const game = connect(HOST === 'localhost' ? GAME : [GAME, `ws://localhost:${qs.get('game') || 8080}`], 'g', m => {
   if (m.type === 'm') { onSample(m, 'phone'); return; }           // my phone's motion, passed on by the server: 60 a second, so before anything else
   stats.events[m.type] = (stats.events[m.type] || 0) + 1;
   if (m.type === 'pong') { net.pong(m); return; }
   if (m.type === 'padtaken') { newPad(); game.send({ type: 'padcode', code: PAD }); showPair(); return; }      // another live tab drew this code first: pick again (nothing was paired to it yet)
-  if (m.type === 'pad') { padOn = !!m.on; stats.pad = padOn; if (padOn) padPhase(); showPair(); return; }      // the phone's page opened (or closed)
+  if (m.type === 'pad') { padOn = !!m.on; stats.pad = padOn; ultimateRelay = ''; if (padOn) padPhase(); else lastSample = -1e9; showPair(); syncUltimate(); return; }
+  if (m.type === 'ultimate' && !Number.isInteger(m.side)) { activateUltimate(m.kind); return; }
   if (m.type === 'padkey') { if (seated() && !spec()) { if (m.k === 'c' && (phase === 'play' || phase === 'calibrate')) startCal(); else if (m.k === 'r' && phase === 'play') recenter(); } return; }      // Calibrate again / Recentre, pressed on the phone
-  if (m.type === 'restart') { restartUntil = performance.now() + 15000; if (tour) say('Poddle is updating. The tournament will end.', null, 4000); else if (room) say('Poddle is updating. Back in a moment.', null, 4000); return; }      // the server is about to restart (a deploy): the court comes back with the reconnect; a tournament does not
+  if (m.type === 'restart') { restartUntil = performance.now() + 15000; if (tour) say('Ping Pong is updating. The tournament will end.', null, 4000); else if (room) say('Ping Pong is updating. Back in a moment.', null, 4000); return; }      // the server is about to restart (a deploy): the court comes back with the reconnect; a tournament does not
   if (m.type === 'tourend') { clearTimeout(tourHang); if (tour) endTour(m.why); return; }      // before joinfail and closed (docs/COURTS-TOURNEY.md 4.5)
   if (!LOBBY) { if (m.type === 'closed') { ui.showOverlay(null); return; } if (['lobby', 'room', 'joinfail', 'left'].includes(m.type)) return; }          // legacy path: no room UI, whatever the server says
   if (m.type === 'lobby') { ui.lobbyRooms(m.rooms, m.online, m.tours); return; }
@@ -647,7 +660,7 @@ const game = connect(HOST === 'localhost' ? GAME : [GAME, `ws://localhost:${qs.g
   if (m.type === 'social') { social.snapIn(m); return; }     // friends, requests in and out, who is online (docs/SOCIAL.md 8), above the guard: the lobby has no court
   if (m.type === 'socialoff') { social.off(); return; }      // the socket lost its account (sign-out, delete): the lists go
   if (m.type === 'room') {                                       // seated, or let in to watch (the normal 'welcome' follows). Also the answer to a reconnect with room=CODE.
-    clearTimeout(tourHang); roomPub = m.public === true; ms = null;      // a new court (or a reconnect into one): its stats start at its next 0-0
+    clearTimeout(tourHang); matchMode = m.mode === '2v2' ? '2v2' : '1v1'; roomPub = m.public === true; ms = null;      // a new court (or a reconnect into one): its stats start at its next 0-0
     const tk = typeof m.tour === 'string' && (m.kind === 'warm' || m.kind === 'match') ? m.kind : null, moved = tk === 'match' && m.role !== 'spectator' && room !== m.code && room != null;      // a tournament's court. moved: pulled out of the stands into my drawn match: no closed came first
     if ((m.promoted || m.demoted) && room === m.code) { settle(); switchSeat(m); say(m.promoted ? 'You’re in. Get your paddle ready.' : 'Time’s up. You’re watching again.', null, 2600); return; }      // moved between the stands and Matt's seat of the SAME court
     askedFor = !!m.asked;                                                                     // a join into Matt's court landed in the stands: the player is being asked
@@ -677,7 +690,7 @@ const game = connect(HOST === 'localhost' ? GAME : [GAME, `ws://localhost:${qs.g
   if (m.type === 'full') { if (!LOBBY) ui.showOverlay('game-full'); return; }
   if (!seated()) return;                                         // THE GUARD (docs/API-NEXT.md 4.2): no room joined = no side, court, score, names, ball, banner, result, toast or sound, whatever the server sends
   if (m.type === 'welcome') { toldCal = null; welcomed = true;      // a new seat, or the old one on a new socket: say again where I am (tellCal, after profile's hello below)
-    ms = null; side = m.side === 1 ? 1 : 0; if (LOBBY && m.role) role = m.role === 'spectator' ? 'spectator' : 'player'; names = cleanNames(m.names); regs = cleanRegs(m.reg); ranks = cleanRanks(m.rank); holding = false; dressSeats();      // rank: each seat's emblem, on any court (docs/TROPHIES.md 3, item 9)
+    ms = null; matchMode = m.mode === '2v2' ? '2v2' : '1v1'; side = Number.isInteger(m.side) && m.side >= 0 && m.side < (matchMode === '2v2' ? 4 : 2) ? m.side : 0; if (LOBBY && m.role) role = m.role === 'spectator' ? 'spectator' : 'player'; names = cleanNames(m.names); regs = cleanRegs(m.reg); ranks = cleanRanks(m.rank); holding = false; dressSeats();      // rank: each seat's emblem, on any court (docs/TROPHIES.md 3, item 9)
     if (LOBBY && room && !spec()) profile.seated();              // a seat of my own: the device id is made now if there is none, and its hello goes at once (docs/ACCOUNTS.md 3.1)
     tellCal();
     if (ui.currentOverlay() === 'game-full') ui.showOverlay(null);
@@ -693,7 +706,7 @@ const game = connect(HOST === 'localhost' ? GAME : [GAME, `ws://localhost:${qs.g
   }
   if (m.type === 'names') {
     const was = names, bot = n => n == null || n === 'Matt'; names = cleanNames(m.names); regs = cleanRegs(m.reg); dressSeats(); if (Array.isArray(m.rank)) ranks = cleanRanks(m.rank); if ([0, 1].some(i => bot(names[i]) !== bot(was[i]))) { struck = false; if (spec()) ui.askPlay(null); } drawNames(); showView(); askSync(); social.court(seatsOn());      // a seat changed hands: a fresh match (and a 'refused' Ask to play may be askable again)
-    for (const i of [0, 1]) if ((spec() || i !== side) && live() && names[i] && names[i] !== 'Matt' && (!was[i] || was[i] === 'Matt')) ui.joinBanner(names[i], spec() ? i === 1 : true);      // a human sat down: the centre banner names them (a changed name is not news)
+    for (const i of seats()) if ((spec() || i !== side) && live() && names[i] && names[i] !== 'Matt' && (!was[i] || was[i] === 'Matt')) ui.joinBanner(names[i], spec() ? i === 1 : true);      // a human sat down: the centre banner names them (a changed name is not news)
     return;
   }
   if (m.type === 'askplay') { if (!spec() && Number.isInteger(m.id)) { askId = m.id; askWho = cleanName(m.name) || 'Someone'; ui.askCard({ name: askWho, left: m.left | 0 }); } return; }      // a spectator asks for Matt's seat: the corner card, 10 s
@@ -703,19 +716,20 @@ const game = connect(HOST === 'localhost' ? GAME : [GAME, `ws://localhost:${qs.g
   if (m.type === 'promoff') { if (live()) say(`${cleanName(m.name) || 'They'} wasn’t ready. Matt is back.`, null, 2600); return; }
   if (m.type === 'watcher') { if (live() && !spec()) ui.watcherNote(cleanName(m.name)); return; }
   if (m.type === 'record') { if (!spec()) ui.recordNote?.(m.what, m.v); return; }      // a new personal best, at the end of the point that set it (NOTES 132), to my seat only      // someone started watching you (the server tells only the players)
-  if (m.type === 'emote') { if (live() && Number.isInteger(m.e)) ui.emote(m.e, cleanName(m.name), m.side === 0 || m.side === 1 ? ((spec() ? m.side === 0 : m.side === side) ? 'me' : 'them') : null); return; }      // everyone on the court sees it. A player's comes out of their own scoreboard tab (the left one is mine, or seat 0 for a spectator); a spectator's pops in the corner (NOTES 208)
+  if (m.type === 'emote') { if (live() && Number.isInteger(m.e)) ui.emote(m.e, cleanName(m.name), Number.isInteger(m.side) ? ((spec() ? m.side % 2 === 0 : m.side % 2 === team()) ? 'me' : 'them') : null); return; }      // everyone on the court sees it. A player's comes out of their own scoreboard tab (the left one is mine, or seat 0 for a spectator); a spectator's pops in the corner (NOTES 208)
   if (m.type === 'state') {
-    state = m; frozen = !!m.paused; scene.setFrozen(frozen || holding);
+    state = m; frozen = !!m.paused; ui.setTurn?.(matchMode === '2v2' && live() && Number.isInteger(m.turn) ? nameOf(m.turn) : null, m.turn === side && !spec(), m.serving != null); scene.setFrozen(frozen || holding);
+    syncUltimate();
     scene.updateBall(m.p, m.v, m.live, undefined, m.spin, m); if (frozen || holding) net.idle(); else net.packet();      // a stopped room is not a bad link
     if ((m.watchers | 0) !== watchers) ui.setWatchers(watchers = m.watchers | 0);
     setPaused(frozen && !holding); drawNames();
-    if (spec()) { askSync(); ui.setScore(m.score[0], m.score[1]); for (const i of [0, 1]) { const o = m.paddles[i]; scene.updatePaddle(i, o ? { x: o.x, y: o.y, z: o.z, q: o.q, offset: null, bot: !!o.bot, status: o.status } : null); } return; }
+    if (spec()) { askSync(); ui.setScore(m.score[0], m.score[1]); for (const i of seats()) { const o = m.paddles[i]; scene.updatePaddle(i, o ? { x: o.x, y: o.y, z: o.z, q: o.q, offset: null, bot: !!o.bot, status: o.status, ultimate: o.ultimate, name: nameOf(i) } : null); } return; }
     if (ui.settings() && noPause !== vsHuman()) ui.setSettings({ canPause: !(noPause = vsHuman()) });      // somebody sat down (or left) while the panel was open: the note follows
     if (forfeits() !== saidForfeit) ui.setSettings({ forfeit: saidForfeit = forfeits() });      // the Leave button says what it costs
     if (live() && !frozen && !holding) serveCoach(m); else svT = 0;      // no serve coaching over a set-up screen or a stopped room; its clock starts again afterwards
-    ui.setScore(m.score[side], m.score[1 - side]);
-    const o = m.paddles[1 - side]; players = o ? 2 : 1;
-    scene.updatePaddle(1 - side, o ? { x: o.x, y: o.y, z: o.z, q: o.q, offset: null, bot: !!o.bot, status: o.status } : null);
+    ui.setScore(m.score[team()], m.score[other()]);
+    players = m.paddles.filter(Boolean).length;
+    for (const i of seats()) if (i !== side) { const o = m.paddles[i]; scene.updatePaddle(i, o ? { x: o.x, y: o.y, z: o.z, q: o.q, offset: null, bot: !!o.bot, status: o.status, ultimate: o.ultimate, name: nameOf(i) } : null); }
     if (frozen && !holding && !cardOpen() && performance.now() > healAt) { healAt = performance.now() + 1000; game.send({ type: 'pause', on: false }); }      // paused with the panel shut (a lost 'pause off', a reload): nobody could ever resume it
     return;
   }
@@ -728,36 +742,38 @@ const game = connect(HOST === 'localhost' ? GAME : [GAME, `ws://localhost:${qs.g
     return;
   }
   if (m.type === 'countdown') { ui.countdown(live() ? m.left : 0); return; }      // 3 - 2 - 1 over the court before a match's first serve: nobody is ready for a ball the moment an opponent sits down
-  if (m.type === 'left') { ui.countdown(0); const who = lastOpp || nameOf(1 - side); clearFar(); ui.setServe(null); if (live() && !spec()) say(`${who} left`, null, 2200); return; }      // only before a match has started now; mid-match it is a hold or a forfeit
+  if (m.type === 'left') { ui.countdown(0); const who = lastOpp || nameOf(other()); clearFar(); ui.setServe(null); if (live() && !spec()) say(`${who} left`, null, 2200); return; }      // only before a match has started now; mid-match it is a hold or a forfeit
   if (m.type === 'match' || m.type === 'matchover') { ui.countdown(0); struck = votedYes = false; over = m; overAt = performance.now(); votedNo = false;
+    syncUltimate();
     profile.matchover(!!m.tour); if (live()) showOver(); return; }      // 'match': a server from before docs/SPECTATE.md
   if (m.type === 'profile') { if (spec()) return; profile.result(m); if (m.trophies && typeof m.trophies === 'object') trophiesIn(m.trophies); return; }      // what this match did to my own stats: a line on the result card (docs/ACCOUNTS.md 9.3) and, when it carries `trophies`, the trophy row (docs/TROPHIES.md 4), to my seat only
-  if (m.type === 'rematch') { const v = Array.isArray(m.votes) ? m.votes : []; ui.rematch(spec() ? { mine: v[0], theirs: v[1], left: m.left } : { mine: v[side], theirs: v[1 - side], left: m.left, name: nameOf(1 - side) }); return; }
+  if (m.type === 'rematch') { const v = Array.isArray(m.votes) ? m.votes : [], aggregate = ids => ids.some(i => v[i] === false) ? false : ids.every(i => v[i] === true) ? true : null; ui.rematch(spec() ? { mine: aggregate(seats().filter(i => i % 2 === 0)), theirs: aggregate(seats().filter(i => i % 2 === 1)), left: m.left } : { mine: v[side], theirs: aggregate(seats().filter(i => i !== side)), left: m.left, name: matchMode === '2v2' ? 'the other players' : teamName(other()) }); return; }
   if (m.type === 'rematchon') { over = null; struck = false; ms = null; trophiesOff(); redialDue(); if (ui.currentOverlay() === 'match') ui.showOverlay(null); rally = 0; ui.setRally(0); return; }      // the scores follow in 'state'
-  if (m.type === 'hold') { holding = true; scene.setFrozen(true); setPaused(false); if (live()) ui.hold(nameOf(m.side === 1 ? 1 : 0), m.left | 0); return; }      // their wifi dropped: the seat is held, the ball waits where it is
+  if (m.type === 'hold') { holding = true; scene.setFrozen(true); setPaused(false); if (live()) ui.hold(nameOf(Number.isInteger(m.side) ? m.side : 0), m.left | 0); return; }      // their wifi dropped: the seat is held, the ball waits where it is
   if (m.type === 'holdoff') { holding = false; ui.hold(null); return; }                     // frozen follows the next 'state'
   if (m.type === 'paused') { if (m.refused) ui.setSettings({ canPause: false }); else { setPaused(!!m.on); scene.setFrozen(!!m.on || holding); } return; }
-  if (m.type === 'wait') { if (live() && !holding) ui.hold(nameOf(m.side === 1 ? 1 : 0), m.left | 0); return; }      // the serve waits for a seat that is calibrating mid-match: the last 30 s of its minute are counted down, then it forfeits
+  if (m.type === 'wait') { if (live() && !holding) ui.hold(nameOf(Number.isInteger(m.side) ? m.side : 0), m.left | 0); return; }      // the serve waits for a seat that is calibrating mid-match: the last 30 s of its minute are counted down, then it forfeits
   if (m.type === 'waitoff') { if (!holding) ui.hold(null); return; }
   if (m.type === 'hit') { struck = true; stats.hits++; clearTimeout(myBet); myBet = null;
     if (m.side === side && !spec()) { stats.myHits++; myKind = m.kind || 'drive'; const n = +m.n || 0;      // the glow shows what scene.js's trail shows (shownN: a lob white, a bet pale); the buzz keeps the stroke's force
-      padFx('hit', shownN(m.bet ? Math.min(n, 0.3) : n, myKind), n); if (m.bet) myBet = setTimeout(() => { myBet = null; padFx('tint', shownN(n, myKind)); }, 300); }      // no settled re-aim in 0.3 s: it flies at the bet
+      const force = Number.isFinite(m.force) ? Math.max(0, Math.min(1, m.force)) : n;
+      padFx('hit', shownN(m.bet ? Math.min(n, 0.3) : n, myKind), force); if (m.bet) myBet = setTimeout(() => { myBet = null; padFx('tint', shownN(n, myKind)); }, 300); }      // no settled re-aim in 0.3 s: it flies at the bet
     rally++; ui.setRally(rally); }   // the shot's name only, and only for my own hits
   // Result-card stats (ms): counted for everyone, hidden court or not, the final point included. A bet hit's kind is provisional; a settled
   // 'launch' carries kind only when it changed it (server/game.js), so the kind is committed at that side's next hit or at the point.
-  if (m.type === 'hit' && (m.side === 0 || m.side === 1)) { if (!ms) ms = msNew(); msCommit(m.side); ms.kind[m.side] = m.kind || 'drive'; }      // made here, not at the first point, so the first rally's smashes count; one made mid-match fails the sum check below
-  if (m.type === 'launch' && ms && m.kind && (m.by === 0 || m.by === 1) && ms.kind[m.by]) ms.kind[m.by] = m.kind;
+  if (m.type === 'hit' && Number.isInteger(m.side)) { if (!ms) ms = msNew(); msCommit(m.side % 2); ms.kind[m.side % 2] = m.kind || 'drive'; }      // made here, not at the first point, so the first rally's smashes count; one made mid-match fails the sum check below
+  if (m.type === 'launch' && ms && m.kind && Number.isInteger(m.by) && ms.kind[m.by % 2]) ms.kind[m.by % 2] = m.kind;
   if (m.type === 'point' && Array.isArray(m.score)) { const sum = (m.score[0] | 0) + (m.score[1] | 0);
     if (sum === 1) { if (!ms || ms.sum !== 0) ms = msNew(); }                     // a match's first point: a clean start, keeping the first rally's shots (seen whole unless we joined mid-rally)
     else if (ms && sum !== ms.sum + 1) ms = null;                                  // a point was missed: no stats for this match
     if (ms) { ms.sum = sum; msCommit(0); msCommit(1); ms.rally = Math.max(ms.rally, rally);      // rally: this point's hits, the HUD's number ('serve' resets it later)
       const w = m.winner === 1 ? 1 : 0; ms.run[w] = ms.cur === w ? ms.run[w] + 1 : 1; ms.run[1 - w] = 0; ms.cur = w; ms.best[w] = Math.max(ms.best[w], ms.run[w]); } }
-  if (m.type === 'serve') { ui.countdown(0); over = null; trophiesOff(); bodyZ = 6.5; walkV = 0; rally = 0; ui.setRally(0); ui.setServe(m.by === (spec() ? 0 : side) ? 'me' : 'them'); if (ui.currentOverlay() === 'match') ui.showOverlay(null);
+  if (m.type === 'serve') { ui.countdown(0); over = null; trophiesOff(); bodyZ = 6.5; walkV = 0; rally = 0; ui.setRally(0); ui.setServe(m.by % 2 === (spec() ? 0 : team()) ? 'me' : 'them'); if (ui.currentOverlay() === 'match') ui.showOverlay(null);
     if (m.wait && m.by === side && !spec() && inPlay()) say('Your serve', null, 2600); }
   if (m.type === 'whiff') stats.whiffs++;                        // no commentary: you can see that you missed
   if (m.type === 'point' && !m.final && live()) {
-    if (spec()) ui.pointBanner(null, nameOf(m.winner === 1 ? 1 : 0), m.winner === 1 ? 1 : 0);
-    else { const won = m.winner === side; ui.pointBanner(won, nameOf(m.winner === 1 ? 1 : 0)); if (won) ui.confetti(['#3aa0ff', '#ffd34a', '#ffffff']); } }      // "Your point!" / "<name> scores", nothing else
+    if (spec()) ui.pointBanner(null, teamName(m.winner === 1 ? 1 : 0), m.winner === 1 ? 1 : 0);
+    else { const won = m.winner === team(); ui.pointBanner(won, teamName(m.winner === 1 ? 1 : 0)); if (won) ui.confetti(['#3aa0ff', '#ffd34a', '#ffffff']); } }      // "Your point!" / "<name> scores", nothing else
   if (m.type === 'launch' && m.by === side && m.n != null && !spec()) { if (m.kind) myKind = m.kind; clearTimeout(myBet); myBet = null; padFx('tint', shownN(+m.n || 0, myKind)); }      // my hit re-aimed on the settled swing: the phone's glow takes that power's colour
   if (SCENE_EVENTS.includes(m.type)) scene.onEvent(m);           // anything else: ignored, no throw
 }, () => { const hi = profile.opened(); if (hi) game.send(hi);      // FIRST on every socket: the device id (docs/ACCOUNTS.md 9.2), never in the URL
@@ -793,10 +809,10 @@ const net = (() => {
 
 setInterval(() => {                               // 20Hz: tell the server where my paddle is
   tellCal(); if (calibrating || !seated() || spec() || !onCourt()) return;      // a paddle message IS 'this seat is ready': only from the court itself
-  const p = model.pose(performance.now());
+  const p = paddlePose(performance.now());
   // r: how fast the hand is turning right now. Below the swing trigger nothing is ever reported, so without it a shove
   // into a held-up paddle at the net would be invisible: with it, a still paddle blocks and a push sends the ball deeper.
-  if (p.calibrated) game.send({ type: 'paddle', auto: autoNow(), autoY: mode === 'auto', x: bodyX * s(), y: bodyY, z: usingBody() && !autoNow() ? bodyZ : undefined, q: p.Pd, r: Math.round((p.rate || 0) * 10) / 10 });
+  if (p.calibrated) game.send({ type: 'paddle', hand, auto: autoNow(), autoY: mode === 'auto', x: bodyX * s(), y: bodyY, z: usingBody() && !autoNow() ? bodyZ : undefined, q: p.Pd, r: Math.round((p.rate || 0) * 10) / 10 });
 }, 50);
 
 // ---------- input ----------
@@ -808,7 +824,7 @@ scene.audio.onDevicesChanged(loadSinks);           // an AirPod connecting mid-m
 let setAtDown = false; addEventListener('pointerdown', () => { setAtDown = ui.settings(); }, true);      // before ui.js closes the card: that click only closes it
 addEventListener('pointerdown', e => { unlock(); if (!setAtDown && !e.target.closest?.('.menu-set, #settings')) play(); });      // the title's settings button and its card are not "anywhere to start"
 ui.onStart(() => { unlock(); ui.fullscreen(true); play(); });           // the big title button (a click is a user gesture: go full screen)
-ui.onLobby({ quick: () => request({ type: 'quick' }), create: pub => request({ type: 'create', public: !!pub }), join: code => request({ type: MOBILE || wantWatch && code === wantRoom ? 'watch' : 'join', code }),      // a phone's Enter in the code boxes, or a court row, watches      // the code screen of a watch link watches
+ui.onLobby({ quick: mode => request({ type: 'quick', mode: mode || '1v1' }), create: (pub, mode) => request({ type: 'create', public: !!pub, mode: mode || '1v1' }), join: code => request({ type: MOBILE || wantWatch && code === wantRoom ? 'watch' : 'join', code }),      // a phone's Enter in the code boxes, or a court row, watches      // the code screen of a watch link watches
   watch: code => request({ type: 'watch', code }),             // a Watch button, or Yes on 'Court is full. Watch instead?'
   bot: playBot,
   start: () => { if (room && phase === 'lobby') begin(); }, back, copied: watch => say(watch ? 'Viewer link copied' : 'Invite copied', null, 1600),
@@ -834,11 +850,12 @@ ui.onSettings({
   move: m => { if (!MODES.includes(m)) return;
     if (ui.currentScreen() && !room) { if (m === 'body' && NO_CAM) return; if (m === 'body' && ls.get(CAM_KEY) === 'skip') ls.del(CAM_KEY); setMode(m, true); return; }      // from the menu: only the choice. The camera (and its primer, if it was skipped) waits for a court
     if (m === 'body' && !(body && body.ready)) { if (camOn && !body) { if (m !== mode) setMode(m); return; } if (!NO_CAM) { camTurnOn(); if (camPerm !== 'granted' && camPerm !== 'denied') say('Press Allow when your browser asks', null, 2600); } return; } if (m !== mode) setMode(m); if (m === 'auto' && camOn) stopCam(); },      // Auto turns the camera off (NOTES 190); Body turns it back on above. How you move is chosen here now, not on the court. Body with no working camera (a No, or it failed) asks for it: Body once it is up. A camera already up (Auto was picked meanwhile) is just used, never asked for twice
-  paddle: pickPaddle, sound: setSound, sink: pickSink, findSinks,
+  paddle: pickPaddle, hand: setHand, sound: setSound, sink: pickSink, findSinks,
   bot: level => { if ([0, 1, 2, 3].includes(level) && !spec()) game.send({ type: 'bot', level }); } });      // the settings row and the row under Matt's tab
 ui.onFriends?.({ open: () => { pause(true); setDim(); social.card(true); }, close: over => { if (!over) pause(false); setDim(); social.card(false); } });      // the friends card (docs/SOCIAL.md 6): a card like settings. over: Settings takes its place and keeps the pause
 ui.onView(name => setView(name, true));
 ui.onEmote(e => { if (room) game.send({ type: 'emote', e }); });      // players and spectators alike (NOTES 205)
+ui.onUltimate(activateUltimate);
 ui.onRematch(yes => { if (!room) return; if (spec()) { if (!yes) leave(); return; }      // a spectator's panel has Leave alone: back to the lobby
   if (!yes && votedYes) { votedNo = true; return leave(); }      // Leave after Rematch: the server takes one answer each, and a player leaving the vote closes the court for everyone just the same
   votedYes = !!yes; votedNo = !yes; game.send({ type: 'rematch', yes: !!yes });      // Leave = no: the server closes the room for everyone, 'closed' brings us back to the lobby
@@ -867,6 +884,7 @@ addEventListener('keydown', e => {
   if (k === 'h') setStats(!showStats);
   if (k.length === 1 && k >= '0' && k <= '9') { const o = ui.currentOverlay(); if (!e.repeat && room && live() && !ui.currentScreen() && (!o || o === 'match')) ui.sendEmote((+k + 9) % 10); return; }      // 1-9, 0: the emote bar's ten (NOTES 205), on court and over the result panel
   if (spec()) { if (k === 'v' && !e.repeat) nextView(); else if (k === 'a' && !e.repeat && ui.askCan()) askPlay(); return; }      // A: Ask to play      // watching: V steps through the views, 1-0 emote, F, H, Q Q and Esc. Nothing else
+  if (k === 'u' && !e.repeat) { activateUltimate('boost'); return; }
   if (k === 'c') startCal();
   if (k === 'r') recenter();
   if (k === 'p') resetPeaks();
@@ -882,7 +900,7 @@ addEventListener('resize', () => scene.resize());
 let lastPos = null;
 (function loop(now) {
   requestAnimationFrame(loop);
-  const p = model.pose(now);
+  const p = paddlePose(now);
   if (p.calibrated && seated() && !spec()) {                     // my own paddle: only with a seat of my own
     const mine = state && state.paddles[side];
     const z = mine ? mine.z : s() * 6.5;
@@ -902,7 +920,7 @@ let lastPos = null;
     const auto = autoNow() && mine;
     const wx = auto ? mine.x : bodyX * s(), wy = auto || (mine && mode === 'auto') ? mine.y : bodyY;      // not auto means Body sees you: the wrist never moves you
     if (auto && usingBody()) { bodyX = mine.x * s(); bodyY = mine.y; vX = vY = 0; }                 // hand back smoothly when the camera finds you again
-    scene.updatePaddle(side, { x: wx, y: wy, z, q: p.Pd, offset: p.offset, bot: false });   // Pd: the bud's real attitude
+    scene.updatePaddle(side, { x: wx, y: wy, z, q: p.Pd, offset: p.offset, bot: false, ultimate: mine?.ultimate, name: nameOf(side) });   // Pd: the bud's real attitude
     if (ui.isVisible('dev')) { ui.setStat('px', (wx * s()).toFixed(1)); ui.setStat('py', wy.toFixed(1)); }
     const pos = [p.x + p.offset[0], p.y + p.offset[1], p.offset[2]];
     if (lastPos && p.swinging) stats.paddlePath += Math.hypot(pos[0] - lastPos[0], pos[1] - lastPos[1], pos[2] - lastPos[2]);
@@ -912,7 +930,7 @@ let lastPos = null;
   { const champ = !!ui.championShowing?.(), up = !ui.currentScreen() && ui.currentOverlay() === 'match', v = vicSide != null && up && (champ || seated()) && performance.now() >= vicAt;      // the winner's shot, exactly while the result panel is up over the court; the champion's podium likewise
     if (champ && champLive && p.calibrated) { const dt = Math.min(0.05, (now - lastFrame) / 1000); lastFrame = now;      // the champion is me: my paddle and body drive the podium seat (no seat on the wire: nothing is sent)
       if (usingBody() && body.seen()) { [bodyX, vX] = damp(bodyX, Math.max(-3.5, Math.min(3.5, body.x())), vX, 0.085, dt); [bodyY, vY] = damp(bodyY, Math.max(0.3, Math.min(2.3, body.y())), vY, 0.085, dt); }
-      scene.updatePaddle(0, { x: usingBody() ? bodyX : 0, y: usingBody() ? bodyY : 1, z: 6.5, q: p.Pd, offset: p.offset, bot: false }); }
+      scene.updatePaddle(0, { x: usingBody() ? bodyX : 0, y: usingBody() ? bodyY : 1, z: 6.5, q: p.Pd, offset: p.offset, bot: false, name: nameOf(0) }); }
     if (!champ && champLive) { champLive = false; scene.podium?.(null); }      // the champion screen is down (Back to courts, See bracket, Esc): the rally again
     scene.setVictory?.(v ? vicSide : null, v ? ui.resultPane?.() : null); }
   scene.render(now);

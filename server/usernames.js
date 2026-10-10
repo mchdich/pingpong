@@ -73,6 +73,6 @@ function imp(v) {
   return skeleton(s);
 }
 const impersonates = name => { const k = imp(name); return !!k && (IMP_EXACT.has(k) || IMP_PREFIX.some(p => k.startsWith(p))); };   // -> true for a guest name that passes as Matt or as the site's staff. Matthew, Mateo, Me, Pro, Club stay false
-const guestShown = (name, seat) => impersonates(name) || profaneName(name) ? 'Player ' + (seat === 1 ? 2 : 1) : name;   // -> what a guest seat shows: its (already cleaned) name, or 'Player 1'/'Player 2' by seat index 0/1 (passing as Matt or staff, or profane: NOTES 204)
+const guestShown = (name, seat) => impersonates(name) || profaneName(name) ? 'Player ' + (Number.isInteger(seat) && seat >= 0 && seat < 4 ? seat + 1 : 1) : name;
 
 module.exports = { validate, skeleton, reserved, profane, profaneName, renameWait, RENAME_DAYS, stripBadges, BADGES: W.BADGES, imp, impersonates, guestShown };
